@@ -1,0 +1,668 @@
+#Produce by Dr. Miao Cai
+
+pacman::p_load(dplyr, readxl, data.table, circlize, stringr,
+               colourvalues, ggplot2, tidyr, cowplot, patchwork)
+
+yellow_col = '#FFC408'
+
+# ========================== 1.1 ICD: COVID VS any ==========================
+disease_label = read_excel('Data/rev1/Disease group label.xlsx') %>%
+  `colnames<-`(c('cat', 'long_name', 'short_name')) %>%
+  mutate(cat = toupper(cat),
+         short_name = gsub(',', '', word(short_name, 1)))
+
+# Significance level
+sig_level_icd = - log(6.57*10^-5, base = 10)
+sig_level_med = - log(6.57*10^-5, base = 10)
+sig_level_lab = - log(6.57*10^-5, base = 10)
+
+# ***********************************************************************
+# ==================== 1.2 Medication: COVID VS any =====================
+# ***********************************************************************
+# ------------------   Read in data   ------------------
+med_group = fread('Data/rev1/medgroup.csv') %>%
+  mutate(cat = substr(DrugClassCode, 1, 2),
+         DrugClassification = tolower(DrugClassification)) %>%
+  mutate(drug_group_short = gsub(',', '', word(DrugClassification, 1))) %>%
+  select(cat, drug_group_long = DrugClassification, drug_group_short) %>%
+  mutate(drug_group_short = str_to_title(drug_group_short)) %>%
+  mutate(drug_group_short = case_when(drug_group_short ==
+                                        'Hormones/Synthetics/Modifiers' ~ 'Hormones',
+                                      cat == 'AD' ~ 'AD',
+                                      cat == 'AH' ~ 'AH',
+                                      cat == 'AN' ~ 'AN',
+                                      cat == 'AP' ~ 'AP',
+                                      cat == 'AS' ~ 'AS',
+                                      cat == 'IM' ~ 'IM',
+                                      cat == 'MS' ~ 'MS',
+                                      cat == 'AU' ~ 'AU',
+                                      cat == 'IP' ~ 'IP',
+                                      drug_group_short == 'Central' ~ 'Central nervous',
+                                      drug_group_short == 'Antiseptics/Disinfectants' ~
+                                        'Antiseptics',
+                                      drug_group_short == 'Antidotesdeterrents' ~ 'Antidotes',
+                                      drug_group_short == 'Herbs/Alternative' ~ 'Herbs',
+                                      drug_group_short == 'Irrigation/Dialysis' ~ 'ID',
+                                      TRUE ~ drug_group_short))
+
+
+
+# =========================== 1.3 Laboratory:COVID VS any ============================
+lab_clean_zaa = fread('Data/Clean lab name.csv')
+lab_clean_name = fread('Data/rev1/hdlab_pos_incidentRV.csv') %>%
+  select(name) %>%
+  unique() %>%
+  mutate(lab_short = gsub(',', '', word(name, 1))) %>%
+  mutate(lab_short = case_when(name == 'Hemoglobin' ~ 'Hgb',
+                               name == 'Phosphate (Serum)' ~ 'PO4',
+                               name == 'Cholesterol' ~ 'Chole',
+                               name == 'Albumin (Serum)' ~ 'Albumin',
+                               name == 'Total Protein (Serum)' ~ 'Protein',
+                               name == 'Partial Thromboplastin Time (PTT)' ~ 'PTT',
+                               name == '\xa0Prothrombin Time' ~ 'PT',
+                               name == 'Carbon Dioxide' ~ 'CO2',
+                               name == 'C Reactive Protein HS' ~ 'hsCRP',
+                               name == 'B Natriuretic Peptide' ~ 'BNP',
+                               name == 'Hemoglobin A1C  (Glycohemoglobin)' ~ 'HbA1c',
+                               name == 'C Reactive Protein' ~ 'CRP',
+                               name == 'Pro B Natriuretic Peptide' ~ 'PBNP',
+                               name == 'Serum Creatinine' ~ 'Creatinine',
+                               name == 'Total Cholesterol' ~ 'TC',
+                               name == 'Phosphatase Alkaline (Serum)' ~ 'ALP',
+                               name == 'Bilirubin (Total)' ~ 'TBIL',
+                               name == 'Bilirubin (Direct)' ~ 'DBIL',
+                               name == 'Troponin T' ~ 'TnT',
+                               name == 'Troponin I' ~ 'TnI',
+                               name == 'Creatinine eGFR' ~ 'eGFR',
+                               name == 'Microalbumin/Creatinine Ratio' ~ 'ACR',
+                               name == 'Triglycerides' ~ 'TG',
+                               TRUE ~ lab_short)) %>%
+  left_join(lab_clean_zaa, by = c('name' = 'Original name')) %>%
+  arrange(lab_short)
+
+
+# =======================   2 COVID vs any   ==========================
+# ========================== 2.1 ICD: COVID VS any ==========================
+icd_any = fread('Data/rev4/POS vs VHA/RVICD10_pos.csv') %>%
+  mutate(cat = substr(disease, 1, 3),
+         cat_num = as.integer(as.factor(substr(disease, 1, 3))),
+         p_value = pchisq(ChiSq, df = 1, lower.tail = FALSE),
+         psig = ifelse(pchisq(ChiSq, df = 1, lower.tail = FALSE) < 6.57*10^-5,
+                       1, 0),
+         HR = ifelse(is.na(HazardRatio), 1, HazardRatio),
+         log_p = -log(pchisq(ChiSq, df = 1, lower.tail = FALSE), 10)) %>%
+  left_join(disease_label, by = 'cat') %>%
+  select(cat, short_name, cat_num, order, disease, LABEL, pvalue = p_value,
+         log_p, psig, HR, abs_diff = abs, base_rate = negrate) %>%
+  arrange(short_name, order) %>%
+  mutate(pvalue = case_when(is.na(pvalue)|HR == 0 ~ 1,
+                            TRUE ~ pvalue),
+         HR = ifelse(HR == 0, 1, HR),
+         log_p = case_when(HR %in% c(0, 1)|is.na(log_p) ~ 0,
+                           log_p == Inf ~ 180,
+                           log_p > 90 ~ 90,
+                           TRUE ~ log_p),
+         psig = ifelse(is.na(psig), 0, psig),
+         abs_diff = case_when(is.na(abs_diff) ~ 0,
+                              abs_diff > 50 ~ 60,
+                              abs_diff < -20 ~ -20,
+                              TRUE ~ abs_diff),
+         base_rate = case_when(is.na(base_rate) ~ 0,
+                               TRUE ~ base_rate)) %>%
+  filter(!(short_name %in% c('Perinatal', 'Pregnancy',
+                             'External', 'Injury', 'Congenital')) & !is.na(order)) %>%
+  mutate(HR = ifelse(HR > 2 & psig == 0, log(HR, base = 2.1), HR)) %>%
+  mutate(cat = factor(cat),
+         col_HR = case_when(HR > 5 & psig == 1 ~ '#7a0177',
+                            HR > 3 & HR <= 5 & psig == 1 ~ '#c51b8a',
+                            HR > 1.5 & HR <= 3 & psig == 1 ~ '#f768a1',
+                            HR > 1.1 & HR <= 1.5 & psig == 1 ~ '#fa9fb5',
+                            HR > 1 & HR <= 1.1 & psig == 1 ~ '#fcc5c0',
+                            # Non-significant
+                            HR > 5 & psig == 0 ~ '#525252',
+                            HR > 3 & HR <= 5 & psig == 0 ~ '#737373',
+                            HR > 1.5 & HR <= 3 & psig == 0 ~ '#969696',
+                            HR > 1.1 & HR <= 1.5 & psig == 0 ~ '#bdbdbd',
+                            HR > 1 & HR <= 1.1 & psig == 0 ~ '#d9d9d9',
+                            TRUE ~ 'gray95'),
+         col_diff = case_when(abs_diff > 40 ~ '#7a0177',
+                              abs_diff > 20 & abs_diff <= 40 ~ '#c51b8a',
+                              abs_diff > 10 & abs_diff <= 20 ~ '#f768a1',
+                              abs_diff > 5 & abs_diff <= 10 ~ '#fa9fb5',
+                              abs_diff > 1 & abs_diff <= 5 ~ '#fcc5c0',
+                              abs_diff > 0 & abs_diff <= 1 ~ '#fde0dd',
+                              abs_diff == 0 ~ 'gray95',
+                              abs_diff > -1 & abs_diff < 0 ~ '#d0d1e6',
+                              abs_diff > -5 & abs_diff <= -1 ~ '#a6bddb',
+                              abs_diff > -10 & abs_diff <= -5 ~ '#74a9cf',
+                              abs_diff > -20 & abs_diff <= -10 ~ '#3690c0',
+                              abs_diff > -40 & abs_diff <= -20 ~ '#0570b0',
+                              abs_diff <= -20 ~ '#034e7b'),
+         col_base = case_when(base_rate > 40 ~ '#7a0177',
+                              base_rate > 20 & base_rate <= 40 ~ '#c51b8a',
+                              base_rate > 10 & base_rate <= 20 ~ '#f768a1',
+                              base_rate > 5 & base_rate <= 10 ~ '#fa9fb5',
+                              base_rate > 1 & base_rate <= 5 ~ '#fcc5c0',
+                              base_rate > 0 & base_rate <= 1 ~ '#fde0dd',
+                              TRUE ~ 'gray95')) %>%
+  as.data.table() 
+
+# Transform data: ICD positive VS any
+## (A) Hazard ratio
+icd_any_m_HR = icd_any %>%
+  select(col_HR) %>%
+  as.matrix()
+rownames(icd_any_m_HR) = paste0("R", 1:nrow(icd_any_m_HR))
+
+col_vec_any_HR = icd_any$col_HR
+names(col_vec_any_HR) = icd_any$col_HR
+
+## (B) Absolute difference
+icd_any_m_diff = icd_any %>%
+  select(col_diff) %>%
+  as.matrix()
+rownames(icd_any_m_diff) = paste0("R", 1:nrow(icd_any_m_diff))
+
+col_vec_any_diff = icd_any$col_diff
+names(col_vec_any_diff) = icd_any$col_diff
+
+## (C) Baseline rate
+icd_any_m_base = icd_any %>%
+  select(col_base) %>%
+  as.matrix()
+rownames(icd_any_m_base) = paste0("R", 1:nrow(icd_any_m_base))
+
+col_vec_any_base = icd_any$col_base
+names(col_vec_any_base) = icd_any$col_base
+
+
+
+pdf("Figures/rev4/main_circos.pdf", width = 7.08661, height = 6.29921)
+par(mfrow = c(2, 2), mar = c(0, 0, 0, 0))
+# ------------ 1.1.0 Initialization ------------
+circos.clear()
+circos.par("track.height" = 0.2,
+           "start.degree" = 90,
+           cell.padding = c(0, 0, 0, 0),
+           gap.degree = 1,
+           #canvas.xlim = c(start_x + 4.4, start_x + 6.4),
+           #canvas.ylim = c(start_y, start_y + 2),
+           #track.margin = 0,
+           points.overflow.warning = FALSE)
+
+circos.heatmap.initialize(icd_any_m_diff, split = icd_any$short_name)
+
+# ------------ 1.1.1 Barplot: HR ------------
+circos.track(ylim = c(0, 2.2), track.margin = c(0.07, 0),
+             bg.border = NA, track.height = 0.12,
+             panel.fun = function(x, y) {
+               logp = icd_any$log_p[CELL_META$subset]
+               logp = logp[CELL_META$row_order]
+               hr = icd_any$HR[CELL_META$subset]
+               hr = hr[CELL_META$row_order]
+               # Reference line
+               circos.lines(CELL_META$cell.xlim, c(0, 0), col = "black", cex = .6)
+               # Log p-value line
+               circos.barplot(pos = seq_along(logp) - 0.5,
+                              value = hr,
+                              col = case_when(logp > sig_level_icd & hr > 1 ~ yellow_col,
+                                              logp > sig_level_icd & hr <= 1 ~ '#bdbdbd',
+                                              TRUE ~ '#bdbdbd'),
+                              border = NA)
+             })
+
+
+
+# ------------ 1.1.2 Heatmap: absolute difference ------------
+circos.heatmap(icd_any_m_diff, split = icd_any$short_name,
+               col = col_vec_any_diff, track.height = 0.12,
+               bg.border = 'black',
+               show.sector.labels = FALSE, bg.lwd = 0.1)
+# Change axis label
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$xcenter, CELL_META$cell.ylim[2] + convert_y(0.5, "mm"),
+              paste0(CELL_META$sector.index),
+              facing = "bending.inside", cex = 0.55, #font = 'Arial',
+              adj = c(0.5, 0), niceFacing = TRUE)
+  circos.axis(h = 1, major.at = c(0, round(CELL_META$xlim[2])), minor.ticks = 0,
+              labels = FALSE, major.tick.length = mm_y(0.2), lwd = 0.05)
+}, bg.border = NA)
+
+
+# ------------ 1.1.3 Heatmap: baseline rate ------------
+circos.heatmap(icd_any_m_base, split = icd_any$short_name,
+               col = col_vec_any_base, track.height = 0.12,
+               bg.border = 'black',
+               show.sector.labels = FALSE, bg.lwd = 0.2)
+
+# ------------ 1.1.4 Barplot: negative log p-value ------------
+circos.track(ylim = c(-40, 0),
+             bg.border = NA, track.height = 0.12,
+             panel.fun = function(x, y) {
+               y = icd_any$log_p[CELL_META$subset]
+               y = y[CELL_META$row_order]
+               y = -y
+               hr = icd_any$HR[CELL_META$subset]
+               hr = hr[CELL_META$row_order]
+               # Reference line
+               circos.lines(CELL_META$cell.xlim, c(0, 0), col = "#969696")
+               # Log p-value line
+               circos.barplot(pos = seq_along(y) - 0.5,
+                              value = y,
+                              col = case_when(y < -sig_level_icd & hr > 1 ~ yellow_col,
+                                              y < -sig_level_icd & hr <= 1 ~ 'gray80',
+                                              TRUE ~ '#bdbdbd'),
+                              border = NA)
+             })
+
+
+
+text(-1, 0.9, "a", adj = c(0, 0))
+circos.clear()
+
+
+
+# ***********************************************************************
+# ==================== 2.2 Medication: COVID VS any =====================
+# ***********************************************************************
+# ------------------   Read in data   ------------------
+med_flu = fread('Data/rev4/POS vs VHA/RVmed_pos.csv') %>%
+  arrange(order) %>%
+  mutate(cat = substr(DrugClassCode, 1, 2),
+         cat_num = as.integer(as.factor(substr(DrugClassCode, 1, 2))),
+         p_value = pchisq(ChiSq, df = 1, lower.tail = FALSE),
+         HR = ifelse(is.na(HazardRatio)|HazardRatio == 0, 1, HazardRatio),
+         log_p = -log(pchisq(ChiSq, df = 1, lower.tail = FALSE), 10)) %>%
+  mutate(psig = ifelse(log_p >= sig_level_med & !is.na(log_p), 1, 0)) %>%
+  left_join(med_group, by = 'cat') %>%
+  select(cat, drug_group_short, cat_num, DrugClassification, order,
+         pvalue = p_value, log_p, psig, HR, abs_diff = abs, base_rate = negrate) %>%
+  filter(!(cat %in% c('AA', 'IN', 'XA', 'XX'))) %>%
+  mutate(pvalue = case_when(is.na(pvalue)|HR == 0 ~ 1,
+                            TRUE ~ pvalue),
+         HR = ifelse(HR == 0, 1, HR),
+         log_p = case_when(HR %in% c(0, 1)|is.na(log_p) ~ 0,
+                           log_p == Inf ~ 180,
+                           log_p > 90 ~ 90,
+                           TRUE ~ log_p),
+         psig = ifelse(is.na(psig), 0, psig),
+         abs_diff = case_when(is.na(abs_diff) ~ 0,
+                              abs_diff > 50 ~ 60,
+                              abs_diff < -20 ~ -20,
+                              TRUE ~ abs_diff),
+         base_rate = case_when(is.na(base_rate) ~ 0,
+                               TRUE ~ base_rate)) %>%
+  mutate(HR = ifelse(HR > 2 & psig == 0, log(HR, base = 2.1), HR)) %>%
+  mutate(HR = ifelse(HR > 4, HR - 4, HR)) %>%
+  mutate(drug_group_short = case_when(drug_group_short == 'Diagnostic' ~ 'DG',
+                                      drug_group_short == 'Rectallocal' ~ 'RT',
+                                      drug_group_short == 'Genitourinary' ~ 'GT',
+                                      drug_group_short == 'Dermatological' ~ 'Derm',
+                                      drug_group_short == 'Dental' ~ 'DT',
+                                      TRUE ~ drug_group_short)) %>%
+  mutate(drug_group_short = case_when(drug_group_short == 'Diagnostic' ~ 'DG',
+                                      drug_group_short == 'Rectallocal' ~ 'RT',
+                                      drug_group_short == 'Genitourinary' ~ 'GT',
+                                      drug_group_short == 'Dermatological' ~ 'Derm',
+                                      drug_group_short == 'Dental' ~ 'DT',
+                                      TRUE ~ drug_group_short)) %>%
+  mutate(cat = factor(cat),
+         col_HR = case_when(HR > 5 & psig == 1 ~ '#7a0177',
+                            HR > 3 & HR <= 5 & psig == 1 ~ '#c51b8a',
+                            HR > 1.5 & HR <= 3 & psig == 1 ~ '#f768a1',
+                            HR > 1.1 & HR <= 1.5 & psig == 1 ~ '#fa9fb5',
+                            HR > 1 & HR <= 1.1 & psig == 1 ~ '#fcc5c0',
+                            # Non-significant
+                            HR > 5 & psig == 0 ~ '#525252',
+                            HR > 3 & HR <= 5 & psig == 0 ~ '#737373',
+                            HR > 1.5 & HR <= 3 & psig == 0 ~ '#969696',
+                            HR > 1.1 & HR <= 1.5 & psig == 0 ~ '#bdbdbd',
+                            HR > 1 & HR <= 1.1 & psig == 0 ~ '#d9d9d9',
+                            TRUE ~ 'gray95'),
+         col_diff = case_when(abs_diff > 40 ~ '#7a0177',
+                              abs_diff > 20 & abs_diff <= 40 ~ '#c51b8a',
+                              abs_diff > 10 & abs_diff <= 20 ~ '#f768a1',
+                              abs_diff > 5 & abs_diff <= 10 ~ '#fa9fb5',
+                              abs_diff > 1 & abs_diff <= 5 ~ '#fcc5c0',
+                              abs_diff > 0 & abs_diff <= 1 ~ '#fde0dd',
+                              abs_diff == 0 ~ 'gray95',
+                              abs_diff > -1 & abs_diff < 0 ~ '#d0d1e6',
+                              abs_diff > -5 & abs_diff <= -1 ~ '#a6bddb',
+                              abs_diff > -10 & abs_diff <= -5 ~ '#74a9cf',
+                              abs_diff > -20 & abs_diff <= -10 ~ '#3690c0',
+                              abs_diff > -40 & abs_diff <= -20 ~ '#0570b0',
+                              abs_diff <= -20 ~ '#034e7b'),
+         col_base = case_when(base_rate > 40 ~ '#7a0177',
+                              base_rate > 20 & base_rate <= 40 ~ '#c51b8a',
+                              base_rate > 10 & base_rate <= 20 ~ '#f768a1',
+                              base_rate > 5 & base_rate <= 10 ~ '#fa9fb5',
+                              base_rate > 1 & base_rate <= 5 ~ '#fcc5c0',
+                              base_rate > 0 & base_rate <= 1 ~ '#fde0dd',
+                              TRUE ~ 'gray95')) %>%
+  as.data.table()
+
+# Transform data: COVID positive VS any
+## (A) Hazard ratio
+med_flu_m_HR = med_flu %>%
+  select(col_HR) %>%
+  as.matrix()
+rownames(med_flu_m_HR) = paste0("R", 1:nrow(med_flu_m_HR))
+
+col_vec_flu_HR = med_flu$col_HR
+names(col_vec_flu_HR) = med_flu$col_HR
+
+## (B) Absolute difference
+med_flu_m_diff = med_flu %>%
+  select(col_diff) %>%
+  as.matrix()
+rownames(med_flu_m_diff) = paste0("R", 1:nrow(med_flu_m_diff))
+
+col_vec_flu_diff = med_flu$col_diff
+names(col_vec_flu_diff) = med_flu$col_diff
+
+## (C) Baseline rate
+med_flu_m_base = med_flu %>%
+  select(col_base) %>%
+  as.matrix()
+rownames(med_flu_m_base) = paste0("R", 1:nrow(med_flu_m_base))
+
+col_vec_flu_base = med_flu$col_base
+names(col_vec_flu_base) = med_flu$col_base
+
+# Significance level
+sig_level_med = - log(6.57*10^-5, base = 10)
+
+
+#par(new = TRUE, mfrow = c(3, 1))
+# ------------ 1.2.0 Initialization ------------
+circos.clear()
+circos.par("track.height" = 0.2,
+           "start.degree" = 90,
+           cell.padding = c(0, 0, 0, 0),
+           gap.degree = 1,
+           # canvas.xlim = c(start_x + 2.2, start_x + 4.2),
+           # canvas.ylim = c(start_y, start_y + 2),
+           points.overflow.warning = FALSE)
+
+circos.heatmap.initialize(med_flu_m_diff, split = med_flu$drug_group_short)
+
+# ------------ 1.2.1 Barplot: HR ------------
+circos.track(ylim = c(0, 2), track.margin = c(0.07, 0),
+             bg.border = NA, track.height = 0.12,
+             panel.fun = function(x, y) {
+               logp = med_flu$log_p[CELL_META$subset]
+               logp = logp[CELL_META$row_order]
+               hr = med_flu$HR[CELL_META$subset]
+               hr = hr[CELL_META$row_order]
+               # Reference line
+               circos.lines(CELL_META$cell.xlim, c(0, 0), col = "black", cex = .6)
+               # Log p-value line
+               circos.barplot(pos = seq_along(logp) - 0.5,
+                              value = hr,
+                              col = case_when(logp > sig_level_med & hr > 1 ~ yellow_col,
+                                              logp > sig_level_med & hr <= 1 ~ '#bdbdbd',
+                                              TRUE ~ '#bdbdbd'),
+                              border = NA)
+             })
+
+# ------------ 1.2.2 Heatmap: absolute difference ------------
+circos.heatmap(med_flu_m_diff, split = med_flu$short_name,
+               col = col_vec_flu_diff, track.height = 0.12,
+               bg.border = 'black',
+               show.sector.labels = FALSE, bg.lwd = 0.2)
+# Change axis label
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$xcenter, CELL_META$cell.ylim[2] + convert_y(0.5, "mm"),
+              paste0(CELL_META$sector.index),
+              facing = "bending.inside", cex = 0.55, #font = 'Arial',
+              adj = c(0.5, 0), niceFacing = TRUE)
+  circos.axis(h = 1, major.at = c(0, round(CELL_META$xlim[2])), minor.ticks = 0,
+              labels = FALSE, major.tick.length = mm_y(0.2), lwd = 0.05)
+}, bg.border = NA)
+
+
+# ------------ 1.2.3 Heatmap: baseline rate ------------
+circos.heatmap(med_flu_m_base, split = med_flu$drug_group_short,
+               col = col_vec_flu_base, track.height = 0.12,
+               bg.border = 'black',
+               show.sector.labels = FALSE, bg.lwd = 0.2)
+
+# ------------ 1.2.4 Barplot: negative log p-value ------------
+circos.track(ylim = c(-30, 0),
+             bg.border = NA, track.height = 0.12,
+             panel.fun = function(x, y) {
+               y = med_flu$log_p[CELL_META$subset]
+               y = y[CELL_META$row_order]
+               y = -y
+               hr = med_flu$HR[CELL_META$subset]
+               hr = hr[CELL_META$row_order]
+               # Reference line
+               circos.lines(CELL_META$cell.xlim, c(0, 0), col = "#969696")
+               # Log p-value line
+               circos.barplot(pos = seq_along(y) - 0.5,
+                              value = y,
+                              col = case_when(y < -sig_level_med & hr > 1 ~ yellow_col,
+                                              y < -sig_level_med & hr <= 1 ~ 'gray80',
+                                              TRUE ~ '#bdbdbd'),
+                              border = NA)
+             })
+
+text(-1, 0.9, "b", adj = c(0, 0))
+circos.clear()
+
+
+
+
+
+
+# =========================== 2.3 Laboratory: COVID VS Flu ============================
+# ------------------   Read in data   ------------------
+lab_flu = fread('Data/rev4/POS vs VHA/RVlab_pos.csv') %>%
+  filter(!is.na(HazardRatio)) %>%
+  arrange(order) %>%
+  mutate(p_value = pchisq(ChiSq, df = 1, lower.tail = FALSE),
+         psig = ifelse(HRLowerCL > 1|HRUpperCL < 1,
+                       1, 0),
+         HR = ifelse(is.na(HazardRatio)|HazardRatio == 0, 1, HazardRatio),
+         negrate = ifelse(is.na(negrate), 0, negrate),
+         abs = ifelse(is.na(abs), 1, abs),
+         log_p = -log(pchisq(ChiSq, df = 1, lower.tail = FALSE), 10)) %>%
+  select(name, Abnormal, order, pvalue = p_value,
+         log_p, psig, HR, abs_diff = abs, base_rate = negrate) %>%
+  left_join(lab_clean_name, by = 'name') %>%
+  mutate(pvalue = case_when(is.na(pvalue)|HR == 0 ~ 1,
+                            TRUE ~ pvalue),
+         HR = ifelse(HR == 0, 1, HR),
+         log_p = case_when(HR %in% c(0, 1)|is.na(log_p) ~ 0,
+                           log_p == Inf ~ 180,
+                           log_p > 90 ~ 90,
+                           TRUE ~ log_p),
+         psig = ifelse(is.na(psig), 0, psig),
+         abs_diff = case_when(is.na(abs_diff) ~ 0,
+                              abs_diff > 50 ~ 60,
+                              abs_diff < -20 ~ -20,
+                              TRUE ~ abs_diff),
+         ab_sign = ifelse(Abnormal == 'Higher than', '+', '|')) %>% #'#d0d1e6'
+  mutate(lab_short = case_when(lab_short == 'Albumin' ~ 'Alb',
+                               lab_short == 'eGFR' ~ 'GFR',
+                               lab_short == 'LDLC' ~ 'LDL',
+                               lab_short == 'Platelet' ~ 'Plt',
+                               lab_short == 'PBNP' ~ 'pBNP  ',
+                               lab_short == 'HDLC' ~ 'HDL',
+                               lab_short == 'CD4/CD8' ~ 'CD4/8',
+                               lab_short == 'DBIL' ~ 'dBIL',
+                               lab_short == 'Potassium' ~ 'K',
+                               lab_short == 'Chloride' ~ 'Cl',
+                               lab_short == 'Creatinine' ~ 'Cr',
+                               lab_short == 'Hematocrit' ~ 'HCT',
+                               TRUE ~ lab_short)) %>%
+  mutate(col_HR = case_when(HR > 5 & psig == 1 & Abnormal == 'Higher than' ~ '#7a0177',
+                            HR > 3 & HR <= 5 & psig == 1 & Abnormal == 'Higher than' ~ '#c51b8a',
+                            HR > 1.5 & HR <= 3 & psig == 1 & Abnormal == 'Higher than' ~ '#f768a1',
+                            HR > 1.1 & HR <= 1.5 & psig == 1 & Abnormal == 'Higher than' ~ '#fa9fb5',
+                            HR > 1 & HR <= 1.1 & psig == 1 & Abnormal == 'Higher than' ~ '#fcc5c0',
+                            # Lower threshold
+                            HR > 5 & psig == 1 & Abnormal == 'Lower than' ~ '#0570b0',
+                            HR > 3 & HR <= 5 & psig == 1 & Abnormal == 'Lower than' ~ '#3690c0',
+                            HR > 1.5 & HR <= 3 & psig == 1 & Abnormal == 'Lower than' ~ '#74a9cf',
+                            HR > 1.1 & HR <= 1.5 & psig == 1 & Abnormal == 'Lower than' ~ '#a6bddb',
+                            HR > 1 & HR <= 1.1 & psig == 1 & Abnormal == 'Lower than' ~ '#d0d1e6',
+                            # Non-significant
+                            HR > 5 & psig == 0 ~ '#525252',
+                            HR > 3 & HR <= 5 & psig == 0 ~ '#737373',
+                            HR > 1.5 & HR <= 3 & psig == 0 ~ '#969696',
+                            HR > 1.1 & HR <= 1.5 & psig == 0 ~ '#bdbdbd',
+                            HR > 1 & HR <= 1.1 & psig == 0 ~ '#d9d9d9',
+                            TRUE ~ 'gray95'),
+         col_diff = case_when(abs_diff > 40 ~ '#7a0177',
+                              abs_diff > 20 & abs_diff <= 40 ~ '#c51b8a',
+                              abs_diff > 10 & abs_diff <= 20 ~ '#f768a1',
+                              abs_diff > 5 & abs_diff <= 10 ~ '#fa9fb5',
+                              abs_diff > 1 & abs_diff <= 5 ~ '#fcc5c0',
+                              abs_diff > 0 & abs_diff <= 1 ~ '#fde0dd',
+                              abs_diff == 0 ~ 'white',
+                              abs_diff > -1 & abs_diff < 0 ~ '#a6bddb',
+                              abs_diff > -5 & abs_diff <= -1 ~ '#74a9cf',
+                              abs_diff > -10 & abs_diff <= -5 ~ '#3690c0',
+                              abs_diff > -20 & abs_diff <= -10 ~ '#0570b0',
+                              abs_diff > -40 & abs_diff <= -20 ~ '#045a8d',
+                              abs_diff <= -40 ~ '#045a8d'),
+         col_base = case_when(base_rate > 40 ~ '#7a0177',
+                              base_rate > 20 & base_rate <= 40 ~ '#c51b8a',
+                              base_rate > 10 & base_rate <= 20 ~ '#f768a1',
+                              base_rate > 5 & base_rate <= 10 ~ '#fa9fb5',
+                              base_rate > 1 & base_rate <= 5 ~ '#fcc5c0',
+                              base_rate > 0 & base_rate <= 1 ~ '#fde0dd',
+                              is.na(base_rate) ~ 'white')) %>%
+  arrange(lab_short, ab_sign) %>%
+  as.data.table()
+
+
+# Transform data: COVID positive VS any
+## (A) Hazard ratio
+lab_flu_m_HR = lab_flu %>%
+  select(col_HR) %>%
+  as.matrix()
+rownames(lab_flu_m_HR) = paste0("R", 1:nrow(lab_flu_m_HR))
+
+col_vec_flu_HR = lab_flu$col_HR
+names(col_vec_flu_HR) = lab_flu$col_HR
+
+## (B) Absolute difference
+lab_flu_m_diff = lab_flu %>%
+  select(col_diff) %>%
+  as.matrix()
+rownames(lab_flu_m_diff) = lab_flu$ab_sign
+
+col_vec_flu_diff = lab_flu$col_diff
+names(col_vec_flu_diff) = lab_flu$col_diff
+
+## (C) Baseline rate
+lab_flu_m_base = lab_flu %>%
+  select(col_base) %>%
+  as.matrix()
+rownames(lab_flu_m_base) = paste0("R", 1:nrow(lab_flu_m_base))
+
+col_vec_flu_base = lab_flu$col_base
+names(col_vec_flu_base) = lab_flu$col_base
+
+# Significance level
+sig_level_lab = - log(6.57*10^-5, base = 10)
+
+
+#par(new = TRUE, mfrow = c(3, 1))
+# ------------ 1.1.0 Initialization ------------
+circos.clear()
+circos.par("track.height" = 0.2,
+           "start.degree" = 90,
+           cell.padding = c(0, 0, 0, 0),
+           gap.degree = 1,
+           #canvas.xlim = c(start_x + 4.4, start_x + 6.4),
+           #canvas.ylim = c(start_y, start_y + 2),
+           #track.margin = 0,
+           points.overflow.warning = FALSE)
+
+circos.heatmap.initialize(lab_flu_m_diff, split = lab_flu$lab_short)
+
+# ------------ 1.1.1 Barplot: HR ------------
+circos.track(ylim = c(0, 3), track.margin = c(0.06, 0),
+             bg.border = NA, track.height = 0.12,
+             panel.fun = function(x, y) {
+               logp = lab_flu$log_p[CELL_META$subset]
+               logp = logp[CELL_META$row_order]
+               hr = lab_flu$HR[CELL_META$subset]
+               hr = hr[CELL_META$row_order]
+               # Reference line
+               circos.lines(CELL_META$cell.xlim, c(0, 0), col = "black", cex = .6)
+               # Log p-value line
+               circos.barplot(pos = seq_along(logp) - 0.5,
+                              value = hr,
+                              col = case_when(logp > sig_level_lab & hr > 1 ~ yellow_col,
+                                              logp > sig_level_lab & hr <= 1 ~ '#bdbdbd',
+                                              TRUE ~ '#bdbdbd'),
+                              border = NA)
+             })
+
+# ------------ 1.1.2 Heatmap: absolute difference ------------
+circos.heatmap(lab_flu_m_diff, split = lab_flu$lab_short,
+               col = col_vec_flu_diff, track.height = 0.12,
+               bg.border = 'black',
+               rownames.side = "outside", rownames.cex = 0.4,
+               show.sector.labels = FALSE, bg.lwd = 0.2)
+# Change axis label
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$xcenter, CELL_META$cell.ylim[2] + convert_y(1.7, "mm"),
+              paste0(CELL_META$sector.index),
+              facing = "bending.inside", cex = 0.55, #font = 'Arial',
+              adj = c(0.5, 0), niceFacing = TRUE)
+  circos.axis(h = 1, major.at = seq(0, round(CELL_META$xlim[2])), minor.ticks = 0,
+              labels = FALSE, major.tick.length = mm_y(0.3), lwd = 0.05)
+}, bg.border = NA)
+
+
+# ------------ 1.1.3 Heatmap: baseline rate ------------
+circos.heatmap(lab_flu_m_base, split = lab_flu$short_name,
+               col = col_vec_flu_base, track.height = 0.12,
+               bg.border = 'black',
+               show.sector.labels = FALSE, bg.lwd = 0.2)
+
+# ------------ 1.1.4 Barplot: negative log p-value ------------
+circos.track(ylim = c(-30, 0),
+             bg.border = NA, track.height = 0.12,
+             panel.fun = function(x, y) {
+               y = lab_flu$log_p[CELL_META$subset]
+               y = y[CELL_META$row_order]
+               y = -y
+               hr = lab_flu$HR[CELL_META$subset]
+               hr = hr[CELL_META$row_order]
+               # Reference line
+               circos.lines(CELL_META$cell.xlim, c(0, 0), col = "#969696")
+               # Log p-value line
+               circos.barplot(pos = seq_along(y) - 0.5,
+                              value = y,
+                              col = case_when(y < -sig_level_lab & hr > 1 ~ yellow_col,
+                                              y < -sig_level_lab & hr <= 1 ~ 'gray80',
+                                              TRUE ~ '#bdbdbd'),
+                              border = NA)
+             })
+
+
+text(-1, 0.9, "c", adj = c(0, 0))
+circos.clear()
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
