@@ -1,0 +1,163 @@
+
+%macro disease(start,stop);
+data baseline;
+length group $16.;
+outcome=0; time=150;
+group="POS";output;
+group="NEG";output;
+run;
+
+/***read in variable needed for ps model**/
+data cohort;
+set hdall.forpsmodel;
+run;
+/***read in all hx variables***/
+data hxmodel;
+set hdall.hxmodel;
+run;
+/***read in initial value for ps model***/
+data est;
+set hdall.psest;
+run;
+
+/**read in selected list of HD var***/
+data hdvs;
+set hdall.hdvs;
+call symput('hdvs',cov);
+run;
+
+data outcomeicd10;
+merge hxmodel(in=a) hdall.outcomeicd10(in=b);
+by scrssn;
+if a and b;
+run;
+
+
+%do i= &start %to &stop;
+data list;
+set outcomeicd10(keep=scrssn odisease&i t0 endoffollow deathtime disease&i group);
+where disease&i^=1;
+if odisease&i ^=. and odisease&i >t0+29 and odisease&i<=endoffollow then do;
+outcome=1; time=odisease&i-(t0+29);
+end;
+else do;
+outcome=0; time=deathtime;
+end;
+run;
+
+proc freq data=list;
+table group*outcome/out=zzz;
+run;
+
+data zzz;
+set zzz;
+call symput ("zero",1);
+run;
+
+data zzz;
+set zzz ;
+if outcome=1 and count>=10 then call symput ("zero",0);
+run;
+
+
+%if &zero ^=1 %then %do; 
+
+
+data matrix1;
+merge cohort(in=a) list(in= b);
+by scrssn;
+if a and b;
+run;
+
+
+proc logistic data=matrix1 noprint inest=est;
+class race sex/param=glm ;
+model group(ref="NEG")=race sex
+_X2-_X16 &&hdvs  hxnin longterm;
+output out=ps pred=ps;
+run;
+
+data aaa;
+set ps;
+if group="POS" then do; olwt=1-ps; end;
+else do; olwt=ps; end;
+id=_n_;
+keep scrssn olwt time outcome id group;
+run;
+
+data hdall.HDicdps1;
+merge hdall.HDicdps1(in=a) aaa(in=b keep=scrssn olwt);
+by scrssn;
+rename olwt=olwt_icd&i ;
+run;
+
+
+
+ods output parameterestimates=pe;
+proc phreg data=aaa covs(aggregate);
+class group(ref="NEG") ;
+model time*outcome(0)=group/ rl;
+weight olwt;
+id scrssn;
+baseline out=sur covariates=baseline survival=sur timelist=150;
+run;
+
+data pe;
+set pe;
+call symput ("hr",hazardratio);
+call symput ("lhr",hrlowercl);
+call symput ("uhr",hruppercl);
+run;
+
+data sur;
+set sur end=last;
+retain posrate posrate_L posrate_U negrate negrate_L negrate_U abs ;
+if group="NEG" then do;
+posrate=(1-sur**(&&hr))*1000;
+posrate_L=(1-sur**(&&uhr))*1000;
+posrate_U=(1-sur**(&&lhr))*1000;
+end;
+if group="POS" then do;
+negrate=(1-sur**(1/&&hr))*1000;
+negrate_L=(1-sur**(1/&&uhr))*1000;
+negrate_U=(1-sur**(1/&&lhr))*1000;
+end;
+if last then do;
+abs=(posrate-negrate);
+abs_L=(posrate-negrate_U);
+abs_U=(posrate-negrate_L);
+output;
+end;
+run;
+
+data result;
+merge pe sur;
+hd="disease&i";
+order=&i;
+run;
+
+%end;
+%else %do;
+data result;
+hd="disease&i";
+order=&i;
+run;
+%end;
+
+data hdall.HDdiseaseoutcome1;
+set hdall.HDdiseaseoutcome1 result;
+run;
+
+%end;
+%mend;
+
+data  hdall.HDdiseaseoutcome1;
+set _null_;
+length hd $128. order 8.;
+run;
+
+data  hdall.HDICDps1;
+set hdall.cohort;
+keep scrssn group;
+run;
+
