@@ -1,0 +1,699 @@
+#Produce by Dr. Miao Cai
+
+pacman::p_load(dplyr, data.table, circlize, readxl, ggplot2, tidyr,
+               patchwork, cowplot, viridis, ggforce, stringr)
+
+y_delta = 0.5
+text_size = 2
+color_size = 0.01
+
+r1 = function(x) format(round(x, 2), nsmall = 2)
+
+# =================== ICD diagnosis  ===================
+disease_label = read_excel('Data/rev1/Disease group label.xlsx') %>%
+  `colnames<-`(c('cat', 'long_name', 'short_name')) %>%
+  mutate(cat = toupper(cat),
+         short_name = gsub(',', '', word(short_name, 1)),
+         long_name1 = case_when(long_name == "Diseases of the Blood and Blood Forming Organs and Certain Disorders Involving the Immune Mechanism" ~ "Blood and Blood Forming\nOrgans and Immune\nMechanism Disorders",
+                                long_name == "Symptoms, Signs and Abnormal Clinical and Laboratory Findings, Not Elsewhere Classified" ~ "Symptoms, Signs and Abnormal\nClinical and Laboratory Findings",
+                                long_name == 'Mental, Behavioral and Neurodevelopmental Disorders' ~ 'Mental, Behavioral and\nNeurodevelopmental Disorders',
+                                long_name == 'Diseases of the Musculoskeletal System and Connective Tissue' ~ 'Musculoskeletal System\nand Connective Tissue',
+                                long_name == "Factors Influencing Health Status and Contact with Health Services" ~ "Factors Influencing Health Status\nand Contact with Health Services",
+                                long_name == "Endocrine, Nutritional and Metabolic Diseases" ~ "Endocrine, Nutritional\nand Metabolic Diseases",
+                                long_name == 'Certain Infectious and Parasitic Diseases' ~ 'Certain Infectious and\nParasitic Diseases',
+                                TRUE ~ gsub('Diseases of the ', '', long_name)))
+
+med_group = fread('Data/rev1/medgroup.csv') %>%
+  mutate(cat = substr(DrugClassCode, 1, 2),
+         DrugClassification = tolower(DrugClassification)) %>%
+  mutate(drug_group_short = gsub(',', '', word(DrugClassification, 1))) %>%
+  select(cat, drug_group_long = DrugClassification, drug_group_short) %>%
+  mutate(drug_group_short = str_to_title(drug_group_short),
+         drug_group_long = gsub(',|/', ', ', drug_group_long)) %>%
+  mutate(drug_group_short = case_when(drug_group_short ==
+                                        'Hormones/Synthetics/Modifiers' ~ 'Hormones',
+                                      cat == 'AD' ~ 'AD',
+                                      cat == 'AN' ~ 'AN',
+                                      cat == 'AP' ~ 'AP',
+                                      cat == 'AS' ~ 'AS',
+                                      cat == 'AU' ~ 'AU',
+                                      cat == 'IP' ~ 'IP',
+                                      drug_group_short == 'Central' ~ 'Central nervous',
+                                      drug_group_short == 'Antiseptics/Disinfectants' ~ 'Antiseptics',
+                                      drug_group_short == 'Antidotesdeterrents' ~ 'Antidotes',
+                                      drug_group_short == 'Herbs/Alternative' ~ 'Herbs',
+                                      drug_group_short == 'Irrigation/Dialysis' ~ 'DL',
+                                      TRUE ~ drug_group_short),
+         drug_group_long = case_when(drug_group_long == 'antidotes, deterrents and poison control' ~
+                                       'antidotes, and poison control',
+                                     drug_group_long == 'blood products, modifiers, volume expanders' ~
+                                       'blood products, modifiers,\nand volume expanders',
+                                     drug_group_long == 'therapeutic nutrients, minerals, electrolytes' ~
+                                       'therapeutic nutrients, and\nminerals, electrolytes',
+                                     TRUE ~ drug_group_long)) %>%
+  mutate(drug_group_long = paste0(toupper(substr(drug_group_long, 1, 1)),
+                                  substr(drug_group_long, 2, nchar(drug_group_long)))) %>%
+  mutate(drug_group_long = gsub(' medications| medication', '', drug_group_long))
+
+
+
+lab_clean_zaa = fread('Data/Clean lab name_zaa corrections.csv')
+lab_clean_name = fread('Data/rev1/hdlab_pos_incidentRV.csv') %>%
+  select(name) %>%
+  unique() %>%
+  mutate(lab_short = gsub(',', '', word(name, 1))) %>%
+  mutate(lab_short = case_when(name == 'Hemoglobin' ~ 'Hgb',
+                               name == 'Phosphate (Serum)' ~ 'PO4',
+                               name == 'Cholesterol' ~ 'Chole',
+                               name == 'Albumin (Serum)' ~ 'Albumin',
+                               name == 'Total Protein (Serum)' ~ 'Protein',
+                               name == 'Partial Thromboplastin Time (PTT)' ~ 'PTT',
+                               name == '\xa0Prothrombin Time' ~ 'PT',
+                               name == 'Carbon Dioxide' ~ 'CO2',
+                               name == 'C Reactive Protein HS' ~ 'hsCRP',
+                               name == 'B Natriuretic Peptide' ~ 'BNP',
+                               name == 'Hemoglobin A1C  (Glycohemoglobin)' ~ 'HbA1c',
+                               name == 'C Reactive Protein' ~ 'CRP',
+                               name == 'Pro B Natriuretic Peptide' ~ 'ProBNP',
+                               name == 'Serum Creatinine' ~ 'Creatinine',
+                               name == 'Total Cholesterol' ~ 'TC',
+                               name == 'Phosphatase Alkaline (Serum)' ~ 'ALP',
+                               name == 'Bilirubin (Total)' ~ 'TBIL',
+                               name == 'Bilirubin (Direct)' ~ 'DBIL',
+                               name == 'Troponin T' ~ 'TnT',
+                               name == 'Troponin I' ~ 'TnI',
+                               name == 'Creatinine eGFR' ~ 'eGFR',
+                               name == 'Microalbumin/Creatinine Ratio' ~ 'ACR',
+                               name == 'Triglycerides' ~ 'TG',
+                               TRUE ~ lab_short)) %>%
+  left_join(lab_clean_zaa, by = c('name' = 'Original name')) %>%
+  arrange(lab_short)
+
+
+# =================== 1. Read COVID vs Any data  ===================
+icd_any = read_excel('Data/rev4/COV vs any hos/any hos_selected outcome_final.xlsx',
+                     sheet = 'ICD10') %>%
+  filter(!is.na(disease)) %>%
+  select(LABEL, group = disease, rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'ICD-10 diagnoses',
+         group = substr(group, 1, 3),
+         LABEL = ifelse(LABEL == 'Joint pain', 'Arthralgia and arthritis', LABEL)) %>%
+  left_join(disease_label, by = c('group' = 'cat'))
+
+med_any = read_excel('Data/rev4/COV vs any hos/any hos_selected outcome_final.xlsx',
+                     sheet = 'Med') %>%
+  select(DrugClassification, group = DrugClassCode,
+         rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'Medications',
+         LABEL0 = str_to_title(tolower(DrugClassification))) %>%
+  mutate(LABEL = gsub(',', ', ', LABEL0)) %>%
+  mutate(LABEL = ifelse(LABEL == 'Antimicrobial Antiobiotics', 'Penicillins', LABEL)) %>%
+  mutate(LABEL = paste0(toupper(substr(LABEL, 1, 1)), tolower(substr(LABEL, 2, nchar(LABEL)))),
+         group = substr(group, 1, 2)) %>%
+  mutate(LABEL = gsub('Vitamin d', 'Vitamin D', LABEL)) %>%
+  mutate(LABEL = gsub('Vitamin c', 'Vitamin C', LABEL)) %>%
+  left_join(med_group, by = c('group' = 'cat'))
+
+
+lab_any = read_excel('Data/rev4/COV vs any hos/any hos_selected outcome_final.xlsx',
+                     sheet = 'Lab') %>%
+  mutate(Criteria = ifelse(Criteria == '4.9000000000000004', '4.9', Criteria),
+         Unit = ifelse(name == 'C reactive protein', 'mg/L', Unit)) %>%
+  mutate(LABEL = paste(name, tolower(Abnormal), Criteria, Unit)) %>%
+  mutate(LABEL = case_when(LABEL == 'Low density lipoprotein cholesterol higher than 130 mg/dL' ~
+                             'Low density lipoprotein higher than 130 mg/dL',
+                           TRUE ~ LABEL)) %>%
+  select(LABEL, group = Abnormal, rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'Laboratory tests')
+
+
+# -------- Create common broad categories for the same fill legend --------
+icd_cat_factor = sort(unique(c(icd_any$long_name1)))
+med_cat_factor = sort(unique(c(med_any$drug_group_long)))
+
+
+# --------------- Plot for COVID vs Any users ---------------
+pany1 = icd_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         long_name1 = factor(long_name1, levels = icd_cat_factor),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1) %>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  left_join(disease_label, by = c('group' = 'cat')) %>%
+  mutate(value = case_when(
+    value == 'Chronic obstructive pulmonary disease and bronchiectasis' ~ 'Chronic obstructive pulmonary disease',
+    value == 'Postprocedural or postoperative respiratory system complication' ~ 'Postprocedural respiratory system complication',
+    value == 'Acute phlebitis; thrombophlebitis and thromboembolism' ~ 'Acute phlebitis; thrombophlebitis; thromboembolism',
+    TRUE ~ value)) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = long_name1), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_viridis_d(option = 'D', drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'd', fill = 'Diagnosis category') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(plot.title = element_text(hjust = 0, size = 12,
+                                  margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+        legend.spacing.y = unit(0.2, 'cm'),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        text = element_text(size = 6))
+
+legend_p1 = get_legend(pany1)
+legend_p1 = plot_grid(legend_p1)
+
+
+pany2 = med_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         drug_group_long = factor(drug_group_long, levels = med_cat_factor),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1) %>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  left_join(med_group, by = c('group' = 'cat')) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = drug_group_long), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_viridis_d(option = 'B', drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'e', fill = 'Medication category') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(#legend.position = 'none',
+        plot.title = element_text(hjust = 0, size = 12,
+                                  margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+        legend.spacing.y = unit(0.2, 'cm'),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        text = element_text(size = 6))
+
+legend_p2 = get_legend(pany2)
+legend_p2 = plot_grid(legend_p2)
+
+
+pany3 = lab_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1)%>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  #left_join(disease_label, by = c('group' = 'cat')) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = group), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_manual(values = c('#F596AA', '#81C7D4'), drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'f', fill = 'Test limit') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(plot.title = element_text(hjust = 0, size = 12,
+                                  margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+        plot.margin = unit(c(0.0, 0, 0, 0), "cm"),
+        text = element_text(size = 6))
+
+
+legend_p3 = get_legend(pany3)
+legend_p3 = plot_grid(legend_p3)
+
+
+
+
+p1 = ggdraw() +
+  draw_plot(pany1 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p1, 0.71, 0, 0.29, 1, valign = 0)
+
+p2 = ggdraw() +
+  draw_plot(pany2 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p2, 0.71, 0, 0.29, 1, valign = 0)
+
+p3 = ggdraw() +
+  draw_plot(pany3 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p3, 0.7, 0, 0.16, 1, hjust = 0)
+
+
+pall = plot_grid(p1, p2, p3,
+                 rel_heights = c(nrow(icd_any), nrow(med_any), nrow(lab_any))/
+                   (nrow(icd_any) + nrow(med_any) + nrow(lab_any)),
+                 ncol = 1)
+ggsave('Figures/rev4/sup_box_cov_any.pdf', pall, width = 10, height = 24, units = 'cm')
+
+
+
+
+
+
+
+
+
+
+# =================== 2. Read COVID vs Flu  ===================
+icd_any = read_excel('Data/rev4/COV vs FLU/vs FLU significant_samefollow_cleaned.xlsx',
+                     sheet = 'ICD10') %>%
+  filter(!is.na(disease)) %>%
+  select(LABEL, group = disease, rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'ICD-10 diagnoses',
+         group = substr(group, 1, 3),
+         LABEL = ifelse(LABEL == 'Joint pain', 'Arthralgia and arthritis', LABEL)) %>%
+  left_join(disease_label, by = c('group' = 'cat'))
+
+med_any = read_excel('Data/rev4/COV vs FLU/vs FLU significant_samefollow_cleaned.xlsx',
+                     sheet = 'MED') %>%
+  select(DrugClassification, group = DrugClassCode,
+         rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'Medications',
+         LABEL0 = str_to_title(tolower(DrugClassification))) %>%
+  mutate(LABEL = gsub(',', ', ', LABEL0)) %>%
+  mutate(LABEL = ifelse(LABEL == 'Antimicrobial Antiobiotics', 'Penicillins', LABEL)) %>%
+  mutate(LABEL = paste0(toupper(substr(LABEL, 1, 1)), tolower(substr(LABEL, 2, nchar(LABEL)))),
+         group = substr(group, 1, 2)) %>%
+  mutate(LABEL = gsub('Vitamin d', 'Vitamin D', LABEL)) %>%
+  mutate(LABEL = gsub('Vitamin c', 'Vitamin C', LABEL)) %>%
+  left_join(med_group, by = c('group' = 'cat'))
+
+
+lab_any = read_excel('Data/rev4/COV vs FLU/vs FLU significant_samefollow_cleaned.xlsx',
+                     sheet = 'Lab') %>%
+  mutate(Criteria = ifelse(Criteria == '4.9000000000000004', '4.9', Criteria),
+         Unit = ifelse(name == 'C reactive protein', 'mg/L', Unit)) %>%
+  mutate(LABEL = paste(name, tolower(Abnormal), Criteria, Unit)) %>%
+  mutate(LABEL = case_when(LABEL == 'Low density lipoprotein cholesterol higher than 130 mg/dL' ~
+                             'Low density lipoprotein higher than 130 mg/dL',
+                           TRUE ~ LABEL)) %>%
+  select(LABEL, group = Abnormal, rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'Laboratory tests')
+
+
+# -------- Create common broad categories for the same fill legend --------
+icd_cat_factor = sort(unique(c(icd_any$long_name1)))
+med_cat_factor = sort(unique(c(med_any$drug_group_long)))
+
+
+# --------------- Plot for COVID vs Any users ---------------
+pany1 = icd_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         long_name1 = factor(long_name1, levels = icd_cat_factor),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1) %>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  left_join(disease_label, by = c('group' = 'cat')) %>%
+  mutate(value = case_when(
+    value == 'Chronic obstructive pulmonary disease and bronchiectasis' ~ 'Chronic obstructive pulmonary disease',
+    value == 'Postprocedural or postoperative respiratory system complication' ~ 'Postprocedural respiratory system complication',
+    value == 'Acute phlebitis; thrombophlebitis and thromboembolism' ~ 'Acute phlebitis; thrombophlebitis; thromboembolism',
+    TRUE ~ value)) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = long_name1), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_viridis_d(option = 'D', drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'd', fill = 'Diagnosis category') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(plot.title = element_text(hjust = 0, size = 12,
+                                  margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+        legend.spacing.y = unit(0.2, 'cm'),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        text = element_text(size = 6))
+
+legend_p1 = get_legend(pany1)
+legend_p1 = plot_grid(legend_p1)
+
+
+pany2 = med_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         drug_group_long = factor(drug_group_long, levels = med_cat_factor),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1) %>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  left_join(med_group, by = c('group' = 'cat')) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = drug_group_long), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_viridis_d(option = 'B', drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'e', fill = 'Medication category') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(#legend.position = 'none',
+    plot.title = element_text(hjust = 0, size = 12,
+                              margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+    legend.spacing.y = unit(0.2, 'cm'),
+    plot.margin = unit(c(0, 0, 0, 0), "cm"),
+    text = element_text(size = 6))
+
+legend_p2 = get_legend(pany2)
+legend_p2 = plot_grid(legend_p2)
+
+
+pany3 = lab_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1)%>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  #left_join(disease_label, by = c('group' = 'cat')) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = group), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_manual(values = c('#F596AA', '#81C7D4'), drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'f', fill = 'Test limit') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(plot.title = element_text(hjust = 0, size = 12,
+                                  margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+        plot.margin = unit(c(0.0, 0, 0, 0), "cm"),
+        text = element_text(size = 6))
+
+
+legend_p3 = get_legend(pany3)
+legend_p3 = plot_grid(legend_p3)
+
+
+
+
+p1 = ggdraw() +
+  draw_plot(pany1 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p1, 0.71, 0, 0.29, 1, valign = 0)
+
+p2 = ggdraw() +
+  draw_plot(pany2 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p2, 0.71, 0, 0.29, 1, valign = 0)
+
+p3 = ggdraw() +
+  draw_plot(pany3 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p3, 0.7, 0, 0.16, 1, hjust = 0)
+
+
+pall = plot_grid(p1, p2, p3,
+                 rel_heights = c(nrow(icd_any), nrow(med_any), nrow(lab_any))/
+                   (nrow(icd_any) + nrow(med_any) + nrow(lab_any)),
+                 ncol = 1)
+ggsave('Figures/rev4/sup_box_cov_flu.pdf', pall, width = 10, height = 24, units = 'cm')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# =================== 3. Read COVID vs Flu SOFA  ===================
+icd_any = read_excel('Data/rev4/COV vs FLU SOFA/Selected outcome_FLU_adj severity_zaa.xlsx',
+                     sheet = 'ICD') %>%
+  filter(!is.na(disease)) %>%
+  select(LABEL, group = disease, rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'ICD-10 diagnoses',
+         group = substr(group, 1, 3),
+         LABEL = ifelse(LABEL == 'Joint pain', 'Arthralgia and arthritis', LABEL)) %>%
+  left_join(disease_label, by = c('group' = 'cat'))
+
+med_any = read_excel('Data/rev4/COV vs FLU SOFA/Selected outcome_FLU_adj severity_zaa.xlsx',
+                     sheet = 'MED') %>%
+  select(DrugClassification, group = DrugClassCode,
+         rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'Medications',
+         LABEL0 = str_to_title(tolower(DrugClassification))) %>%
+  mutate(LABEL = gsub(',', ', ', LABEL0)) %>%
+  mutate(LABEL = ifelse(LABEL == 'Antimicrobial Antiobiotics', 'Penicillins', LABEL)) %>%
+  mutate(LABEL = paste0(toupper(substr(LABEL, 1, 1)), tolower(substr(LABEL, 2, nchar(LABEL)))),
+         group = substr(group, 1, 2)) %>%
+  mutate(LABEL = gsub('Vitamin d', 'Vitamin D', LABEL)) %>%
+  mutate(LABEL = gsub('Vitamin c', 'Vitamin C', LABEL)) %>%
+  left_join(med_group, by = c('group' = 'cat'))
+
+
+lab_any = read_excel('Data/rev4/COV vs FLU SOFA/Selected outcome_FLU_adj severity_zaa.xlsx',
+                     sheet = 'LAB') %>%
+  mutate(Criteria = ifelse(Criteria == '4.9000000000000004', '4.9', Criteria),
+         Unit = ifelse(name == 'C reactive protein', 'mg/L', Unit)) %>%
+  mutate(LABEL = paste(name, tolower(Abnormal), Criteria, Unit)) %>%
+  mutate(LABEL = case_when(LABEL == 'Low density lipoprotein cholesterol higher than 130 mg/dL' ~
+                             'Low density lipoprotein higher than 130 mg/dL',
+                           TRUE ~ LABEL)) %>%
+  select(LABEL, group = Abnormal, rate_diff = abs,
+         rate_diff_low = abs_L, rate_diff_up = abs_U) %>%
+  mutate(rate_diff1 = paste0(r1(rate_diff), ' (', r1(rate_diff_low), ', ', r1(rate_diff_up), ')'),
+         cat = 'Laboratory tests')
+
+
+# -------- Create common broad categories for the same fill legend --------
+icd_cat_factor = sort(unique(c(icd_any$long_name1)))
+med_cat_factor = sort(unique(c(med_any$drug_group_long)))
+
+
+# --------------- Plot for COVID vs Any users ---------------
+pany1 = icd_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         long_name1 = factor(long_name1, levels = icd_cat_factor),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1) %>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  left_join(disease_label, by = c('group' = 'cat')) %>%
+  mutate(value = case_when(
+    value == 'Chronic obstructive pulmonary disease and bronchiectasis' ~ 'Chronic obstructive pulmonary disease',
+    value == 'Postprocedural or postoperative respiratory system complication' ~ 'Postprocedural respiratory system complication',
+    value == 'Acute phlebitis; thrombophlebitis and thromboembolism' ~ 'Acute phlebitis; thrombophlebitis; thromboembolism',
+    TRUE ~ value)) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = long_name1), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_viridis_d(option = 'D', drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'd', fill = 'Diagnosis category') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(plot.title = element_text(hjust = 0, size = 12,
+                                  margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+        legend.spacing.y = unit(0.2, 'cm'),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        text = element_text(size = 6))
+
+legend_p1 = get_legend(pany1)
+legend_p1 = plot_grid(legend_p1)
+
+
+pany2 = med_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         drug_group_long = factor(drug_group_long, levels = med_cat_factor),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1) %>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  left_join(med_group, by = c('group' = 'cat')) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = drug_group_long), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_viridis_d(option = 'B', drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'e', fill = 'Medication category') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(#legend.position = 'none',
+    plot.title = element_text(hjust = 0, size = 12,
+                              margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+    legend.spacing.y = unit(0.2, 'cm'),
+    plot.margin = unit(c(0, 0, 0, 0), "cm"),
+    text = element_text(size = 6))
+
+legend_p2 = get_legend(pany2)
+legend_p2 = plot_grid(legend_p2)
+
+
+pany3 = lab_any %>%
+  arrange(rate_diff) %>%
+  mutate(LABEL = factor(LABEL, levels = .$LABEL),
+         ynum = 1:n()) %>%
+  select(cat, ynum, group, LABEL, rate_diff1)%>%
+  pivot_longer(cols = LABEL:rate_diff1) %>%
+  mutate(xnum = ifelse(name == 'LABEL', 0, 1),
+         x_width = ifelse(name == 'LABEL', 1.45, 0.55)) %>%
+  mutate(x_min = xnum - x_width/2,
+         x_max = xnum + x_width/2,
+         y_min = ynum - y_delta,
+         y_max = ynum + y_delta) %>%
+  #left_join(disease_label, by = c('group' = 'cat')) %>%
+  mutate(x_position = ifelse(name == 'LABEL', x_min + 0.01, x_min + 0.005)) %>%
+  ggplot() +
+  geom_rect(aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max,
+                fill = group), alpha = 0.5,
+            color = 'white', size = color_size) +
+  geom_text(aes(x = x_position, y = ynum, label = value),
+            hjust = 0, size = text_size) +
+  scale_fill_manual(values = c('#F596AA', '#81C7D4'), drop = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(title = 'f', fill = 'Test limit') +
+  theme_void() +
+  guides(fill = guide_legend(byrow = TRUE, ncol = 1, keywidth = 0.3,
+                             keyheight = 0.2)) +
+  theme(plot.title = element_text(hjust = 0, size = 12,
+                                  margin = margin(l = 0, r = 0, t = 0, b = 0, unit = "pt")),
+        plot.margin = unit(c(0.0, 0, 0, 0), "cm"),
+        text = element_text(size = 6))
+
+
+legend_p3 = get_legend(pany3)
+legend_p3 = plot_grid(legend_p3)
+
+
+
+
+p1 = ggdraw() +
+  draw_plot(pany1 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p1, 0.71, 0, 0.29, 1, valign = 0)
+
+p2 = ggdraw() +
+  draw_plot(pany2 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p2, 0.71, 0, 0.29, 1, valign = 0)
+
+p3 = ggdraw() +
+  draw_plot(pany3 + theme(legend.position = 'none'),
+            0, 0, 0.71, 1) +
+  draw_plot(legend_p3, 0.7, 0, 0.16, 1, hjust = 0)
+
+
+pall = plot_grid(p1, p2, p3,
+                 rel_heights = c(nrow(icd_any), nrow(med_any), nrow(lab_any))/
+                   (nrow(icd_any) + nrow(med_any) + nrow(lab_any)),
+                 ncol = 1)
+ggsave('Figures/rev4/sup_box_cov_flu_sofa.pdf', pall, width = 10, height = 24, units = 'cm')
+
+
+
+
