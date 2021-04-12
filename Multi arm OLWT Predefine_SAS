@@ -1,0 +1,213 @@
+/**to reduce run time, read in large data first before do seperate outcomes**/
+
+data forpsmodel;
+set hd4arm.forpsmodel;
+run;
+
+data predefine;
+set hd4arm.predefine;
+run;
+
+
+%macro incident(outcome);
+data eee;
+set hd4arm.hdps_vha;
+length cov $32767.;
+retain cov;
+cov=catx(' ',cov,_name_); 
+call symput('hdvs',cov);
+run;
+/**use seperate PS***/
+data model;
+merge predefine (in=a keep=scrssn hx_&outcome where=(hx_&outcome =.))  forpsmodel;
+by scrssn;
+if a;
+run;
+
+proc logistic data=model noprint;
+class sex race;
+model classvha(event="1")= _X2-_X16 longterm sex race
+&hdvs;
+ ;
+output out=ps (keep=scrssn ps_vha_&outcome ) pred=ps_vha_&outcome ;
+run;
+
+
+data hd4arm.cohort_ps;
+merge hd4arm.cohort_ps(in=a) ps(in=b);
+by scrssn;
+if a;
+run;
+
+/**POS***/
+
+data eee;
+set hd4arm.hdps_pos;
+length cov $32767.;
+retain cov;
+cov=catx(' ',cov,_name_); 
+call symput('hdvs',cov);
+run;
+
+
+proc logistic data=model noprint;
+class sex race;
+model classpos(event="1")=_X2-_X16 longterm sex race
+&hdvs
+ ;
+output out=ps (keep=scrssn ps_pos_&outcome ) pred=ps_pos_&outcome ;
+run;
+
+
+
+data hd4arm.cohort_ps;
+merge hd4arm.cohort_ps(in=a) ps(in=b);
+by scrssn;
+if a;
+run;
+
+/***hos***/
+
+data eee;
+set hd4arm.hdps_hos;
+length cov $32767.;
+retain cov;
+cov=catx(' ',cov,_name_); 
+call symput('hdvs',cov);
+run;
+
+
+proc logistic data=model noprint;
+class sex race;
+model classhos(event="1")=_X2-_X16 longterm sex race
+&hdvs
+ ;
+output out=ps (keep=scrssn ps_hos_&outcome ) pred=ps_hos_&outcome ;
+run;
+
+data hd4arm.cohort_ps;
+merge hd4arm.cohort_ps(in=a) ps(in=b);
+by scrssn;
+if a;
+run;
+
+/**icu***/
+
+data eee;
+set hd4arm.hdps_icu;
+length cov $32767.;
+retain cov;
+cov=catx(' ',cov,_name_); 
+call symput('hdvs',cov);
+run;
+
+
+proc logistic data=model noprint;
+class sex race;
+model classicu(event="1")=_X2-_X16 longterm sex race
+&hdvs
+ ;
+output out=ps (keep=scrssn ps_icu_&outcome ) pred=ps_icu_&outcome ;
+run;
+
+data hd4arm.cohort_ps;
+merge hd4arm.cohort_ps(in=a) ps(in=b);
+by scrssn;
+if a;
+run;
+
+
+data outcome;
+merge hd4arm.cohort_ps(keep=scrssn t0 group deathtime ps_vha_&outcome  ps_pos_&outcome  
+ps_hos_&outcome  ps_icu_&outcome endoffollow  in=a
+where=(ps_vha_&outcome ^=.)) predefine(keep=scrssn  oc_&outcome  in=b);
+by scrssn;
+if a and b;
+if oc_&outcome ^=. and oc_&outcome>t0+29 and oc_&outcome<=endoffollow then do;
+event=1;
+time=oc_&outcome -(t0+29);
+end;
+else do;
+event=0;
+time=deathtime;
+end;
+
+;
+run;
+
+data baseline;
+group="0VHA"; output;
+group="1POS"; output;
+group="2HOS"; output;
+group="3ICU"; output;
+run;
+
+proc freq data=outcome;
+table group/out=freq;
+run;
+data freq;
+set freq;
+if index(group,"0") then call symput ("P0",percent/100);
+if index(group,"1") then call symput ("P1",percent/100);
+if index(group,"2") then call symput ("P2",percent/100);
+if index(group,"3") then call symput ("P3",percent/100);
+run;
+
+
+data outcome;
+set outcome;
+if index(group,"0") then  trunweight=(1/ps_vha_&outcome )/(1/ps_vha_&outcome +1/ps_pos_&outcome +1/ps_hos_&outcome +1/ps_icu_&outcome );
+if index(group,"1") then  trunweight=(1/ps_pos_&outcome )/(1/ps_vha_&outcome +1/ps_pos_&outcome +1/ps_hos_&outcome +1/ps_icu_&outcome );
+if index(group,"2") then  trunweight=(1/ps_hos_&outcome )/(1/ps_vha_&outcome +1/ps_pos_&outcome +1/ps_hos_&outcome +1/ps_icu_&outcome );
+if index(group,"3") then trunweight=(1/ps_icu_&outcome )/(1/ps_vha_&outcome +1/ps_pos_&outcome +1/ps_hos_&outcome +1/ps_icu_&outcome );
+
+run;
+
+
+
+ods output hazardratios=hr;
+proc phreg data=outcome covs(aggregate);
+class group /ref=first;
+model time*event(0)=group;
+hazardratio group/diff=pairwise;
+weight trunweight;
+baseline out=sur covariates=baseline survival=sur timelist=150;
+id scrssn;
+run;
+
+
+data hr;
+set hr;
+outcome="&outcome";
+run;
+
+data sur;
+set sur;
+outcome="&outcome";
+run;
+
+data hd4arm.hrresult;
+set hd4arm.hrresult hr;
+run;
+
+data hd4arm.surresult;
+set hd4arm.surresult sur;
+run;
+%mend;
+
+/**suggest do own outcome storage dataset for each batch**/
+
+data hd4arm.surresult;
+set _null_;
+length outcome $64.;
+run;
+
+data hd4arm.hrresult;
+set _null_;
+length outcome $64.;
+run;
+
+
+
+
+/*****/
