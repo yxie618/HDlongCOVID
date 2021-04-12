@@ -1,0 +1,1408 @@
+#Produce by Dr. Miao Cai
+
+pacman::p_load(dplyr, data.table, readxl, ggplot2, tidyr, patchwork,
+               cowplot, viridis, ggforce, stringr)
+
+dropEndingZero <- function(x){
+  str_replace(x, '(\\.)0|(\\.)00', '')
+}
+
+text_base_size = 7
+text_base_size1 = 7
+left_margin = 0.4
+
+
+disease_label = read_excel('Data/rev1/Disease group label.xlsx') %>%
+  `colnames<-`(c('cat', 'long_name', 'short_name')) %>%
+  mutate(cat = toupper(cat),
+         short_name = gsub(',', '', word(short_name, 1)),
+         long_name1 = case_when(long_name == "Diseases of the Blood and Blood Forming Organs and Certain Disorders Involving the Immune Mechanism" ~ "Blood and Blood Forming Organs\nand Immune Mechanism Disorders",
+                                long_name == "Symptoms, Signs and Abnormal Clinical and Laboratory Findings, Not Elsewhere Classified" ~ "Symptoms, Signs and Abnormal\nClinical and Laboratory Findings",
+                                long_name == 'Mental, Behavioral and Neurodevelopmental Disorders' ~ 'Mental, Behavioral and\nNeurodevelopmental Disorders',
+                                long_name == 'Diseases of the Musculoskeletal System and Connective Tissue' ~ 'Musculoskeletal and Connective Tissue',
+                                long_name == "Factors Influencing Health Status and Contact with Health Services" ~ "Factors Influencing Health Status\nand Contact with Health Services",
+                                long_name == "Endocrine, Nutritional and Metabolic Diseases" ~ "Endocrine, Nutritional\nand Metabolic Diseases",
+                                long_name == 'Certain Infectious and Parasitic Diseases' ~ 'Certain Infectious and\nParasitic Diseases',
+                                TRUE ~ gsub('Diseases of the ', '', long_name)))
+
+disease_cat_order = disease_label %>%
+  filter(!(short_name %in% c('Perinatal', 'Pregnancy', 'External',
+                             'Injury', 'Congenital'))) %>%
+  arrange(short_name) %>%
+  pull(short_name)
+
+
+med_group = fread('Data/rev1/medgroup.csv') %>%
+  mutate(cat = substr(DrugClassCode, 1, 2),
+         DrugClassification = tolower(DrugClassification)) %>%
+  mutate(drug_group_short = gsub(',', '', word(DrugClassification, 1))) %>%
+  select(cat, drug_group_long = DrugClassification, drug_group_short) %>%
+  mutate(drug_group_short = str_to_title(drug_group_short),
+         drug_group_long = gsub(',|/', ', ', drug_group_long)) %>%
+  mutate(drug_group_short = case_when(drug_group_short ==
+                                        'Hormones/Synthetics/Modifiers' ~ 'Hormones',
+                                      cat == 'AD' ~ 'AD',
+                                      cat == 'AN' ~ 'AN',
+                                      cat == 'AP' ~ 'AP',
+                                      cat == 'AS' ~ 'AS',
+                                      cat == 'AU' ~ 'AU',
+                                      cat == 'IP' ~ 'IP',
+                                      drug_group_short == 'Central' ~ 'Central nervous',
+                                      drug_group_short == 'Antiseptics/Disinfectants' ~ 'Antiseptics',
+                                      drug_group_short == 'Antidotesdeterrents' ~ 'Antidotes',
+                                      drug_group_short == 'Herbs/Alternative' ~ 'Herbs',
+                                      drug_group_short == 'Irrigation/Dialysis' ~ 'DL',
+                                      TRUE ~ drug_group_short),
+         drug_group_long = case_when(drug_group_long == 'antidotes, deterrents and poison control' ~
+                                       'antidotes, and poison control',
+                                     drug_group_long == 'blood products, modifiers, volume expanders' ~
+                                       'blood products, modifiers,\nand volume expanders',
+                                     drug_group_long == 'therapeutic nutrients, minerals, electrolytes' ~
+                                       'therapeutic nutrients, and\nminerals, electrolytes',
+                                     TRUE ~ drug_group_long)) %>%
+  mutate(drug_group_long = paste0(toupper(substr(drug_group_long, 1, 1)),
+                                  substr(drug_group_long, 2, nchar(drug_group_long)))) %>%
+  mutate(drug_group_long = gsub(' medications| medication', '', drug_group_long))
+
+
+
+# =================== 0. VS VHA  ===================
+# --------------- Read in data ---------------
+dany = read_excel('Data/rev4/POS vs VHA/Significant_POS_cleaned.xlsx',
+                  sheet = 'ICD10') %>%
+  filter(!(LABEL %in%
+             c("COVID-19", "Viral infection",
+               "Pneumonia (except that caused by tuberculosis)",
+               'Sequela of specified infectious disease conditions'))) %>%
+  mutate(cat = substr(disease, 1, 3),
+         `p_value` = pchisq(ChiSq, df = 1, lower.tail = FALSE),
+         LABEL = ifelse(LABEL == 'Encounter for observation and examination for conditions ruled out (excludes infectious disease, neoplasm, mental disorders)', 'Encounter for observation, excluding infectious disease, neoplasm, mental disorders', LABEL)) %>%
+  left_join(disease_label, by = 'cat') %>%
+  filter(!(short_name %in% c('Perinatal', 'Pregnancy', 'External',
+                             'Injury', 'Congenital'))) %>%
+  mutate(LABEL = case_when(LABEL == 'Exposure, encounters, screening or contact with infectious disease' ~
+                             'Encounters or contact with infectious disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postoperative respiratory system complication',
+                           LABEL == 'Joint pain' ~ 'Arthralgia and arthritis',
+                           LABEL == 'Chronic obstructive pulmonary disease and bronchiectasis' ~
+                             'Chronic obstructive pulmonary disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postprocedural respiratory system complication',
+                           LABEL == 'Acute phlebitis; thrombophlebitis and thromboembolism' ~
+                             'Acute phlebitis; thrombophlebitis; thromboembolism',
+                           TRUE ~ gsub(' and unspecified', '', LABEL)))
+
+fp_med_any = read_excel('Data/rev4/POS vs VHA/Significant_POS_cleaned.xlsx',
+                        sheet = 'Med') %>%
+  mutate(cat = substr(`DrugClassCode`, 1, 2),
+         LABEL0 = str_to_title(tolower(DrugClassification))) %>%
+  mutate(LABEL0 = gsub(',|/', ', ', LABEL0)) %>%
+  mutate(LABEL = case_when(TRUE ~ LABEL0)) %>%
+  mutate(LABEL = gsub('Iv Solutions', 'IV Solutions', LABEL)) %>%
+  left_join(med_group, by = 'cat') %>%
+  mutate(drug_group_long = gsub(' medications| medication', '', drug_group_long))
+
+fp_lab_any = read_excel('Data/rev4/POS vs VHA/Significant_POS_cleaned.xlsx',
+                        sheet = 'Lab') %>%
+  mutate(lab_long = name) %>%
+  group_by(Abnormal) %>%
+  arrange(HazardRatio) %>%
+  ungroup() %>%
+  mutate(lab_num = 1:n()) %>%
+  mutate(Abnormal = factor(Abnormal, levels = c('Lower than', 'Higher than'),
+                           labels = c('Low', 'High')),
+         ord = str_pad(lab_num, 2, 'left', 0)) %>%
+  select(lab_num, ord, Abnormal, name, lab_long, HazardRatio, HRLowerCL, HRUpperCL) %>%
+  as.data.table()
+
+level_HR_any = dany %>%
+  arrange(HazardRatio) %>%
+  pull(LABEL)
+
+
+# =============== Plotting data ===============
+# --------------- ICD ---------------
+p_icd_any0 = dany %>%
+  mutate(long_name1 = case_when(long_name1 == 'Blood and Blood Forming Organs\nand Immune Mechanism Disorders' ~
+                                  'Blood and Blood Forming Organs',
+                                long_name1 == 'Certain Infectious and\nParasitic Diseases' ~
+                                  'Certain Infectious Diseases',
+                                long_name1 == 'Musculoskeletal and Connective Tissue' ~
+                                  'Musculoskeletal and\nConnective Tissue',
+                                TRUE ~ long_name1)) %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_icd_any1 = dany %>%
+  mutate(long_name1 = case_when(long_name1 == 'Blood and Blood Forming Organs\nand Immune Mechanism Disorders' ~
+                                  'Blood and Blood Forming Organs',
+                                long_name1 == 'Certain Infectious and\nParasitic Diseases' ~
+                                  'Certain Infectious Diseases',
+                                long_name1 == 'Musculoskeletal and Connective Tissue' ~
+                                  'Musculoskeletal and\nConnective Tissue',
+                                TRUE ~ long_name1)) %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_icd_any2 = dany %>%
+  mutate(long_name1 = case_when(long_name1 == 'Blood and Blood Forming Organs\nand Immune Mechanism Disorders' ~
+                                  'Blood and Blood Forming Organs',
+                                long_name1 == 'Certain Infectious and\nParasitic Diseases' ~
+                                  'Certain Infectious Diseases',
+                                long_name1 == 'Musculoskeletal and Connective Tissue' ~
+                                  'Musculoskeletal and\nConnective Tissue',
+                                TRUE ~ long_name1)) %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.7) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 7),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 7.1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+
+
+
+# --------------- Medication ---------------
+p_med_any0 = fp_med_any %>%
+  mutate(drug_group_long = case_when(drug_group_long == 'Blood products, modifiers,\nand volume expanders' ~
+                                       'Blood products, modifiers',
+                                     TRUE ~ drug_group_long)) %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_med_any1 = fp_med_any %>%
+  mutate(drug_group_long = case_when(drug_group_long == 'Blood products, modifiers,\nand volume expanders' ~
+                                       'Blood products, modifiers',
+                                     TRUE ~ drug_group_long)) %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_med_any2 = fp_med_any %>%
+  mutate(drug_group_long = case_when(drug_group_long == 'Blood products, modifiers,\nand volume expanders' ~
+                                       'Blood products, modifiers',
+                                     TRUE ~ drug_group_long)) %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.7) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 9),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 9.2)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ---------------- Lab ----------------
+p_lab_any0 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_lab_any1 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_lab_any2 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.6) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = 'Adjusted hazard ratio (95% CI)', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 7),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 7.1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ------------------- Combine plots -------------------
+p_c0 = plot_grid(p_icd_any0, p_icd_any1, p_icd_any2,
+                 rel_widths = c(0.21, 0.27, 0.52),
+                 ncol = 3, align = "h")
+p_c1 = plot_grid(p_med_any0, p_med_any1, p_med_any2,
+                 rel_widths = c(0.215, 0.265, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+p_c2 = plot_grid(p_lab_any0, p_lab_any1, p_lab_any2,
+                 rel_widths = c(0.285, 0.195, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+
+row_perc = c(nrow(dany), nrow(fp_med_any), nrow(fp_lab_any))/
+  (nrow(dany) + nrow(fp_med_any) + nrow(fp_lab_any))
+
+p_all = plot_grid(p_c0, p_c1, p_c2,
+                  ncol = 1, nrow = 3,
+                  rel_heights = row_perc, labels = c('a', 'b', 'c'),
+                  label_x = 0, hjust = 0, vjust = 1)
+ggsave('Figures/rev4/sup_forrest_VHA.pdf', p_all,
+       width = 18, height = 24, units = 'cm')
+
+
+
+
+
+
+
+
+
+
+
+
+
+# =================== 1. VS Any hospitalization  ===================
+# --------------- Read in data ---------------
+dany = read_excel('Data/rev4/COV vs any hos/any hos_selected outcome_final.xlsx',
+                  sheet = 'ICD10') %>%
+  filter(!(LABEL %in%
+             c("COVID-19", "Viral infection",
+               "Pneumonia (except that caused by tuberculosis)",
+               'Sequela of specified infectious disease conditions'))) %>%
+  mutate(cat = substr(disease, 1, 3),
+         `p_value` = pchisq(ChiSq, df = 1, lower.tail = FALSE),
+         LABEL = ifelse(LABEL == 'Encounter for observation and examination for conditions ruled out (excludes infectious disease, neoplasm, mental disorders)', 'Encounter for observation, excluding infectious disease, neoplasm, mental disorders', LABEL)) %>%
+  left_join(disease_label, by = 'cat') %>%
+  filter(!(short_name %in% c('Perinatal', 'Pregnancy', 'External',
+                             'Injury', 'Congenital'))) %>%
+  mutate(LABEL = case_when(LABEL == 'Exposure, encounters, screening or contact with infectious disease' ~
+                             'Encounters or contact with infectious disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postoperative respiratory system complication',
+                           LABEL == 'Joint pain' ~ 'Arthralgia and arthritis',
+                           LABEL == 'Chronic obstructive pulmonary disease and bronchiectasis' ~
+                             'Chronic obstructive pulmonary disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postprocedural respiratory system complication',
+                           LABEL == 'Acute phlebitis; thrombophlebitis and thromboembolism' ~
+                             'Acute phlebitis; thrombophlebitis; thromboembolism',
+                           TRUE ~ gsub(' and unspecified', '', LABEL)))
+
+fp_med_any = read_excel('Data/rev4/COV vs any hos/any hos_selected outcome_final.xlsx',
+                        sheet = 'Med') %>%
+  mutate(cat = substr(`DrugClassCode`, 1, 2),
+         LABEL0 = str_to_title(tolower(DrugClassification))) %>%
+  mutate(LABEL0 = gsub(',|/', ', ', LABEL0)) %>%
+  mutate(LABEL = case_when(TRUE ~ LABEL0)) %>%
+  mutate(LABEL = gsub('Iv Solutions', 'IV Solutions', LABEL)) %>%
+  left_join(med_group, by = 'cat') %>%
+  mutate(drug_group_long = gsub(' medications| medication', '', drug_group_long))
+
+fp_lab_any = read_excel('Data/rev4/COV vs any hos/any hos_selected outcome_final.xlsx',
+                        sheet = 'Lab') %>%
+  mutate(lab_long = name) %>%
+  group_by(Abnormal) %>%
+  arrange(HazardRatio) %>%
+  ungroup() %>%
+  mutate(lab_num = 1:n()) %>%
+  mutate(Abnormal = factor(Abnormal, levels = c('Lower than', 'Higher than'),
+                           labels = c('Low', 'High')),
+         ord = str_pad(lab_num, 2, 'left', 0)) %>%
+  select(lab_num, ord, Abnormal, name, lab_long, HazardRatio, HRLowerCL, HRUpperCL) %>%
+  as.data.table()
+
+level_HR_any = dany %>%
+  arrange(HazardRatio) %>%
+  pull(LABEL)
+
+
+# =============== Plotting data ===============
+# --------------- ICD ---------------
+p_icd_any0 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_icd_any1 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_icd_any2 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.7) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 7),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 7.1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+
+
+
+# --------------- Medication ---------------
+p_med_any0 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_med_any1 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_med_any2 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.7) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 9),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 9.2)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ---------------- Lab ----------------
+p_lab_any0 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_lab_any1 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_lab_any2 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.6) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = 'Adjusted hazard ratio (95% CI)', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 7),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 7.1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ------------------- Combine plots -------------------
+p_c0 = plot_grid(p_icd_any0, p_icd_any1, p_icd_any2,
+                  rel_widths = c(0.21, 0.27, 0.52),
+                 ncol = 3, align = "h")
+p_c1 = plot_grid(p_med_any0, p_med_any1, p_med_any2,
+                 rel_widths = c(0.215, 0.265, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+p_c2 = plot_grid(p_lab_any0, p_lab_any1, p_lab_any2,
+                 rel_widths = c(0.30, 0.18, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+
+row_perc = c(nrow(dany), nrow(fp_med_any), nrow(fp_lab_any))/
+  (nrow(dany) + nrow(fp_med_any) + nrow(fp_lab_any))
+
+p_all = plot_grid(p_c0, p_c1, p_c2,
+                  ncol = 1, nrow = 3,
+                 rel_heights = row_perc, labels = c('a', 'b', 'c'),
+                 label_x = 0, hjust = 0, vjust = 1)
+ggsave('Figures/rev4/sup_forrest_any.pdf', p_all,
+       width = 18, height = 24, units = 'cm')
+
+
+
+
+
+
+
+
+# =================== 2. VS Any Flu  ===================
+# --------------- Read in data ---------------
+dany = read_excel('Data/rev4/COV vs FLU/vs FLU significant_samefollow_cleaned.xlsx',
+                  sheet = 'ICD10') %>%
+  filter(!(LABEL %in%
+             c("COVID-19", "Viral infection",
+               "Pneumonia (except that caused by tuberculosis)",
+               'Sequela of specified infectious disease conditions'))) %>%
+  mutate(cat = substr(disease, 1, 3),
+         `p_value` = pchisq(ChiSq, df = 1, lower.tail = FALSE),
+         LABEL = ifelse(LABEL == 'Encounter for observation and examination for conditions ruled out (excludes infectious disease, neoplasm, mental disorders)', 'Encounter for observation, excluding infectious disease, neoplasm, mental disorders', LABEL)) %>%
+  left_join(disease_label, by = 'cat') %>%
+  filter(!(short_name %in% c('Perinatal', 'Pregnancy', 'External',
+                             'Injury', 'Congenital'))) %>%
+  mutate(LABEL = case_when(LABEL == 'Exposure, encounters, screening or contact with infectious disease' ~
+                             'Encounters or contact with infectious disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postoperative respiratory system complication',
+                           LABEL == 'Joint pain' ~ 'Arthralgia and arthritis',
+                           LABEL == 'Chronic obstructive pulmonary disease and bronchiectasis' ~
+                             'Chronic obstructive pulmonary disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postprocedural respiratory system complication',
+                           LABEL == 'Acute phlebitis; thrombophlebitis and thromboembolism' ~
+                             'Acute phlebitis; thrombophlebitis; thromboembolism',
+                           TRUE ~ gsub(' and unspecified', '', LABEL)))
+
+fp_med_any = read_excel('Data/rev4/COV vs FLU/vs FLU significant_samefollow_cleaned.xlsx',
+                        sheet = 'MED') %>%
+  mutate(cat = substr(`DrugClassCode`, 1, 2),
+         LABEL0 = str_to_title(tolower(DrugClassification))) %>%
+  mutate(LABEL0 = gsub(',|/', ', ', LABEL0)) %>%
+  mutate(LABEL = case_when(TRUE ~ LABEL0)) %>%
+  mutate(LABEL = gsub('Iv Solutions', 'IV Solutions', LABEL)) %>%
+  left_join(med_group, by = 'cat') %>%
+  mutate(drug_group_long = gsub(' medications| medication', '', drug_group_long))
+
+fp_lab_any = read_excel('Data/rev4/COV vs FLU/vs FLU significant_samefollow_cleaned.xlsx',
+                        sheet = 'Lab') %>%
+  mutate(lab_long = name) %>%
+  group_by(Abnormal) %>%
+  arrange(HazardRatio) %>%
+  ungroup() %>%
+  mutate(lab_num = 1:n()) %>%
+  mutate(Abnormal = factor(Abnormal, levels = c('Lower than', 'Higher than'),
+                           labels = c('Low', 'High')),
+         ord = str_pad(lab_num, 2, 'left', 0)) %>%
+  select(lab_num, ord, Abnormal, name, lab_long, HazardRatio, HRLowerCL, HRUpperCL) %>%
+  as.data.table()
+
+level_HR_any = dany %>%
+  arrange(HazardRatio) %>%
+  pull(LABEL)
+
+
+# =============== Plotting data ===============
+# --------------- ICD ---------------
+p_icd_any0 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_icd_any1 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_icd_any2 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.55) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 9),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 9.1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+
+
+
+# --------------- Medication ---------------
+p_med_any0 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_med_any1 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_med_any2 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.55) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 9, 13),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 13.5)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ---------------- Lab ----------------
+p_lab_any0 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_lab_any1 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_lab_any2 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.5) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = 'Adjusted hazard ratio (95% CI)', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 7),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 7.1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ------------------- Combine plots -------------------
+p_c0 = plot_grid(p_icd_any0, p_icd_any1, p_icd_any2,
+                 rel_widths = c(0.21, 0.27, 0.52),
+                 ncol = 3, align = "h")
+p_c1 = plot_grid(p_med_any0, p_med_any1, p_med_any2,
+                 rel_widths = c(0.225, 0.255, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+p_c2 = plot_grid(p_lab_any0, p_lab_any1, p_lab_any2,
+                 rel_widths = c(0.30, 0.18, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+
+row_perc = c(nrow(dany), nrow(fp_med_any), nrow(fp_lab_any))/
+  (nrow(dany) + nrow(fp_med_any) + nrow(fp_lab_any))
+
+p_all = plot_grid(p_c0, p_c1, p_c2,
+                  ncol = 1, nrow = 3,
+                  rel_heights = row_perc, labels = c('a', 'b', 'c'),
+                  label_x = 0, hjust = 0, vjust = 1)
+ggsave('Figures/rev4/sup_forrest_flu.pdf', p_all, width = 18, height = 24, units = 'cm')
+
+
+
+
+
+
+
+# =================== 3. VS Any Flu SOFA ===================
+# --------------- Read in data ---------------
+dany = read_excel('Data/rev4/COV vs FLU SOFA/Selected outcome_FLU_adj severity_zaa.xlsx',
+                  sheet = 'ICD') %>%
+  filter(!(LABEL %in%
+             c("COVID-19", "Viral infection",
+               "Pneumonia (except that caused by tuberculosis)",
+               'Sequela of specified infectious disease conditions'))) %>%
+  mutate(cat = substr(disease, 1, 3),
+         `p_value` = pchisq(ChiSq, df = 1, lower.tail = FALSE),
+         LABEL = ifelse(LABEL == 'Encounter for observation and examination for conditions ruled out (excludes infectious disease, neoplasm, mental disorders)', 'Encounter for observation, excluding infectious disease, neoplasm, mental disorders', LABEL)) %>%
+  left_join(disease_label, by = 'cat') %>%
+  filter(!(short_name %in% c('Perinatal', 'Pregnancy', 'External',
+                             'Injury', 'Congenital'))) %>%
+  mutate(LABEL = case_when(LABEL == 'Exposure, encounters, screening or contact with infectious disease' ~
+                             'Encounters or contact with infectious disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postoperative respiratory system complication',
+                           LABEL == 'Joint pain' ~ 'Arthralgia and arthritis',
+                           LABEL == 'Chronic obstructive pulmonary disease and bronchiectasis' ~
+                             'Chronic obstructive pulmonary disease',
+                           LABEL == 'Postprocedural or postoperative respiratory system complication' ~
+                             'Postprocedural respiratory system complication',
+                           LABEL == 'Acute phlebitis; thrombophlebitis and thromboembolism' ~
+                             'Acute phlebitis; thrombophlebitis; thromboembolism',
+                           TRUE ~ gsub(' and unspecified', '', LABEL)))
+
+fp_med_any = read_excel('Data/rev4/COV vs FLU SOFA/Selected outcome_FLU_adj severity_zaa.xlsx',
+                        sheet = 'MED') %>%
+  mutate(cat = substr(`DrugClassCode`, 1, 2),
+         LABEL0 = str_to_title(tolower(DrugClassification))) %>%
+  mutate(LABEL0 = gsub(',|/', ', ', LABEL0)) %>%
+  mutate(LABEL = case_when(TRUE ~ LABEL0)) %>%
+  mutate(LABEL = gsub('Iv Solutions', 'IV Solutions', LABEL)) %>%
+  left_join(med_group, by = 'cat') %>%
+  mutate(drug_group_long = gsub(' medications| medication', '', drug_group_long))
+
+fp_lab_any = read_excel('Data/rev4/COV vs FLU SOFA/Selected outcome_FLU_adj severity_zaa.xlsx',
+                        sheet = 'LAB') %>%
+  mutate(lab_long = name) %>%
+  group_by(Abnormal) %>%
+  arrange(HazardRatio) %>%
+  ungroup() %>%
+  mutate(lab_num = 1:n()) %>%
+  mutate(Abnormal = factor(Abnormal, levels = c('Lower than', 'Higher than'),
+                           labels = c('Low', 'High')),
+         ord = str_pad(lab_num, 2, 'left', 0)) %>%
+  select(lab_num, ord, Abnormal, name, lab_long, HazardRatio, HRLowerCL, HRUpperCL) %>%
+  as.data.table()
+
+level_HR_any = dany %>%
+  arrange(HazardRatio) %>%
+  pull(LABEL)
+
+
+# =============== Plotting data ===============
+# --------------- ICD ---------------
+p_icd_any0 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_icd_any1 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_icd_any2 = dany %>%
+  mutate(LABEL = factor(LABEL, levels = dany %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.55) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 9),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 9.1)) +
+  facet_grid(long_name1 ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+
+
+
+# --------------- Medication ---------------
+p_med_any0 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_med_any1 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_med_any2 = fp_med_any %>%
+  mutate(LABEL = factor(LABEL, levels = fp_med_any %>%
+                          arrange(HazardRatio) %>%
+                          pull(LABEL))) %>%
+  ggplot(aes(x = HazardRatio, y = LABEL)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.55) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 9, 13),
+                     labels = dropEndingZero) +
+  #scale_y_discrete(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(1, 13.5)) +
+  facet_grid(drug_group_long ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ---------------- Lab ----------------
+p_lab_any0 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = 0,
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(0, 0)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_void(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0, 0, left_margin), "cm"),
+        legend.position = 'none',
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        strip.text.y.left = element_text(angle = 0),
+        strip.background = element_rect(fill = "gray90", color = NA))
+
+p_lab_any1 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  labs(x = '', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(1),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size1) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = 'none',
+        strip.placement = 'outside',
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+p_lab_any2 = fp_lab_any %>%
+  mutate(Abnormal = ifelse(Abnormal == 'High',
+                           'Laboratory result\nhigher than threshold',
+                           'Laboratory result\nlower than threshold')) %>%
+  ggplot(aes(x = HazardRatio, y = ord)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(xmin = HRLowerCL, xmax = HRUpperCL), width = 0.5) +
+  guides(color = guide_legend(direction = "vertical", ncol = 2, byrow = F)) +
+  labs(x = 'Adjusted hazard ratio (95% CI)', y = NULL) +
+  scale_x_continuous(trans='log10',
+                     expand = c(0, 0),
+                     breaks = c(0, 1, 1.3, 1.5, 1.7, 2, 3, 4, 5, 7),
+                     labels = dropEndingZero) +
+  scale_y_discrete(labels = fp_lab_any[, setNames(as.character(lab_long), ord)]) +
+  coord_cartesian(xlim = c(1, 7.1)) +
+  facet_grid(Abnormal ~ ., space = 'free_y',
+             scales = 'free_y', switch = 'y') +
+  theme_classic(base_size = text_base_size) +
+  theme(plot.margin = unit(c(0, 0.0, 0, 0), "cm"),
+        legend.position = 'none',
+        axis.text.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        strip.placement = 'outside',
+        #strip.text.y.left = element_text(angle = 0),
+        strip.text.y = element_blank(),
+        strip.background = element_blank())
+
+
+# ------------------- Combine plots -------------------
+p_c0 = plot_grid(p_icd_any0, p_icd_any1, p_icd_any2,
+                 rel_widths = c(0.21, 0.27, 0.52),
+                 ncol = 3, align = "h")
+p_c1 = plot_grid(p_med_any0, p_med_any1, p_med_any2,
+                 rel_widths = c(0.215, 0.265, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+p_c2 = plot_grid(p_lab_any0, p_lab_any1, p_lab_any2,
+                 rel_widths = c(0.30, 0.18, 0.52),
+                 ncol = 3, align = "h", axis = 'r')
+
+row_perc = c(nrow(dany), nrow(fp_med_any), nrow(fp_lab_any))/
+  (nrow(dany) + nrow(fp_med_any) + nrow(fp_lab_any))
+
+p_all = plot_grid(p_c0, p_c1, p_c2,
+                  ncol = 1, nrow = 3,
+                  rel_heights = row_perc, labels = c('a', 'b', 'c'),
+                  label_x = 0, hjust = 0, vjust = 1)
+ggsave('Figures/rev4/sup_forrest_flu_sofa.pdf', p_all, width = 18, height = 24, units = 'cm')
