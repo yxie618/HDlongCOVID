@@ -1,0 +1,194 @@
+/*high dimensional variable selection*/
+data cohort;
+set hdall.cohort;
+run;
+
+data list;
+set cohort;
+keep scrssn group;
+run;
+
+data icd10;
+merge list(in=a) hdall.hxicd10(in=b);
+by scrssn;
+if a and b;
+run;
+
+proc means data=icd10 noprint;
+var disease1-disease540;
+class group;
+output out=icd10_1 sum=disease1-disease540;
+run;
+
+data icd10_1;
+set icd10_1;
+if group="" then group="Z";
+run;
+
+proc transpose data=icd10_1 out=icd10_2;
+id group;
+run;
+
+
+data icd10_2;
+set icd10_2;
+where POS>=10 and NEG>=10;
+run;
+
+data icd10_2(where=(_name_^='_FREQ_'));
+set icd10_2;
+retain totalN totala totalb;
+if _name_='_FREQ_' then do; totalN=z; totala=POS; totalb=NEG;end;
+else RR_AB=(POS/(POS+NEG))/((totala-POS)/(totala+totalb-POS-NEG));
+run;
+
+
+data ICD10_2;
+set ICD10_2 ;
+if RR_AB<1 then RR_AB=1/RR_AB;
+if RR_AB=. then RR_AB=1;
+run;
+
+/***medication***/
+data med;
+merge list(in=a) hdall.hxmed(in=b);
+by scrssn;
+if a and b;
+run;
+
+proc means data=med noprint;
+var med1-med543;
+class group;
+output out=med_1 sum=med1-med543;
+run;
+
+data med_1;
+set med_1;
+if group="" then group="Z";
+run;
+
+proc transpose data=med_1 out=med_2;
+id group;
+run;
+
+data med_2;
+set med_2;
+where POS>=10 and NEG>=10;
+run;
+
+data med_2(where=(_name_^='_FREQ_'));
+set med_2;
+retain totalN totala totalb;
+if _name_='_FREQ_' then do; totalN=z; totala=POS; totalb=NEG;end;
+else RR_AB=(POS/(POS+NEG))/((totala-POS)/(totala+totalb-POS-NEG));
+run;
+
+
+data med_2;
+set med_2 ;
+if RR_AB<1 then RR_AB=1/RR_AB;
+if RR_AB=. then RR_AB=1;
+run;
+
+/***lab***/
+data lab;
+merge list(in=a) hdall.hxlab(in=b);
+by scrssn;
+if a and b;
+run;
+
+proc means data=lab noprint;
+var hlab1-hlab38 llab1-llab38;
+class group;
+output out=lab_1 sum=hlab1-hlab38 llab1-llab38;
+run;
+
+data lab_1;
+set lab_1;
+if group="" then group="Z";
+run;
+
+proc transpose data=lab_1 out=lab_2;
+id group;
+run;
+
+data lab_2;
+set lab_2;
+where POS>=10 and NEG>=10;
+run;
+
+data lab_2(where=(_name_^='_FREQ_'));
+set lab_2;
+retain totalN totala totalb;
+if _name_='_FREQ_' then do; totalN=z; totala=POS; totalb=NEG;end;
+else RR_AB=(POS/(POS+NEG))/((totala-POS)/(totala+totalb-POS-NEG));
+run;
+
+
+data lab_2;
+set lab_2 ;
+if RR_AB<1 then RR_AB=1/RR_AB;
+if RR_AB=. then RR_AB=1;
+run;
+
+data hdps;
+length _name_ $32.;
+set icd10_2 lab_2  med_2;
+run;
+
+proc sort data=hdps;
+by descending rr_ab;
+run;
+
+data hdps;
+set hdps;
+if _n_<=100;
+run;
+
+data eee;
+set hdps;
+length cov $32767.;
+retain cov;
+cov=catx(' ',cov,_name_); 
+call symput('hdvs',cov);
+run;
+
+
+
+
+data hdall.hdvs;
+set eee;
+run;
+
+
+
+
+data hdall.forpsmodel;
+merge matrix(in=a)  hdall.hxicd10 hdall.hxmed hdall.hxlab;
+by scrssn;
+if a;
+run;
+
+
+
+proc logistic data=hdall.forpsmodel noprint outest=est ;
+class race sex/param=glm ;
+model group(ref="NEG")=race sex
+_X2-_X19 &hdvs  longterm;
+output out=ps  pred=ps;
+run;
+
+
+data ps;
+set ps;
+if group="NEG" then do;
+olwt=ps;
+end;
+else olwt=1-ps;
+run;
+
+data hdall.cohort_ps;
+merge hdall.cohort(in=a) ps(keep=scrssn ps olwt);
+by scrssn;
+if a;
+run;
