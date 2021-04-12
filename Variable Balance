@@ -1,0 +1,82 @@
+/**examine standardized mean diff**/
+
+data hx;
+set hdall.hxmodel;
+if race="B" then raceb=1; else raceb=0;
+if race="W" then racew=1; else racew=0;
+if sex="M" then sexm=1; else sexm=0;
+run;
+
+
+data ps;
+merge hdall.hdicdps1-hdall.hdicdps6 hdall.hdmedps hdall.hdlabps;
+run;
+
+%macro stdicd(start,stop);
+
+%do i= &start %to &stop;
+ 
+data ps1;
+set ps;
+wt=olwt_icd&i ;
+keep scrssn group wt;
+run;
+
+data hxps;
+merge hx ps1;
+run;
+
+proc means data=hxps noprint;
+var raceb racew sexm longterm disease1-disease540 med1-med543 hlab1-hlab38 llab1-llab38 ;
+class group;
+weight wt;
+output out=sum sum=raceb racew sexm disease1-disease540 med1-med545 hlab1-hlab38 llab1-llab38;
+run;
+
+
+proc transpose data=sum out=sum1;
+id group;
+run;
+
+proc means data=ps1 noprint;
+var wt;
+class group;
+output out=n sum=n;
+run;
+
+data n;
+set n;
+if group="POS" then call symput('posn',n);
+if group="NEG" then call symput ('negn',n);
+run;
+
+
+data sum2(where=(Z^='_FREQ_' and Z^='_TYPE_' ) keep=z std_diff outcome);
+set sum1(rename=(_name_=Z ));
+where pos>0 and neg>0;
+retain totalN totala totalb;
+if Z='_FREQ_' then do; totala=&posn; totalb=&negn;end;
+p1=round(100*pos/totala,0.01)/100;
+p2=round(100*neg/totalb,0.01)/100;
+std_diff=abs(round((p1-p2)/sqrt((p1*(1-p1)+p2*(1-p2))/2),0.001));
+outcome="icd&i";
+run;
+
+
+
+
+proc append base=sum2 data=cont nowarn force;
+run;
+
+proc append base=hdall.std_icd1 data=sum2 nowarn force;
+run;
+%end;
+%mend;
+
+
+data hdall.std_icd1;
+set _null_;
+length z $16. outcome $64. std_diff 6;
+run;
+
+
